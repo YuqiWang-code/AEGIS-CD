@@ -290,12 +290,24 @@ def print_banner(args, model, dataset_root, train_loader, val_loader, test_loade
     switches.append(f'ds_profile={args.ds_profile}')
     switches.append(f'diff_mode={args.diff_mode}')
     switches.append(f'diff_sharing={args.diff_sharing}')
+    switches.append(f'sdtr_scope={args.sdtr_scope}')
+    switches.append(
+        f'temporal_relation_mode={args.temporal_relation_mode}'
+    )
     switches.append(f'supervision_mode={args.supervision_mode}')
     switches.append(f'amp_phase_mode={args.amp_phase_mode}')
     switches.append(f'encoder_fusion_mode={args.encoder_fusion_mode}')
     switches.append(f'boundary_mode={args.boundary_mode}')
     switches.append(f'consistency_mode={args.consistency_mode}')
     lines.append(f'  Modules       : {", ".join(switches)}')
+
+    # Run14: also print the effective normalised topology.
+    lines.append(
+        f'  Base diff     : {model.base_diff_mode}'
+    )
+    lines.append(
+        f'  Relation plan : {list(model.temporal_relation_plan)}'
+    )
 
     if args.use_sfif:
         deployable = 'no (legacy SFIF)'
@@ -445,6 +457,8 @@ def trainValidateSegmentation(args):
         encoder_fusion_mode=args.encoder_fusion_mode,
         boundary_mode=args.boundary_mode,
         consistency_mode=args.consistency_mode,
+        sdtr_scope=args.sdtr_scope,
+        temporal_relation_mode=args.temporal_relation_mode,
     )
     if args.onGPU:
         model = model.cuda()
@@ -611,6 +625,13 @@ def trainValidateSegmentation(args):
         'val_split': args.val_split,
         'diff_mode': args.diff_mode,
         'diff_sharing': args.diff_sharing,
+        'sdtr_scope': args.sdtr_scope,
+        'temporal_relation_mode': args.temporal_relation_mode,
+
+        # Effective normalised Run14 topology.
+        'base_diff_mode': model.base_diff_mode,
+        'temporal_relation_plan': list(model.temporal_relation_plan),
+
         'supervision_mode': args.supervision_mode,
         'amp_phase_mode': args.amp_phase_mode,
         'use_lfds': args.use_lfds,
@@ -706,6 +727,11 @@ def trainValidateSegmentation(args):
             'best_epoch': best_epoch,
             'dataset': args.dataset,
             'batch_size': args.batch_size,
+
+            # Full experiment configuration used to construct this checkpoint.
+            # Run14 resume validation will compare this against the current CLI.
+            'run_config': config_dict,
+
             'train_generator_state': train_generator.get_state(),
             'torch_rng_state': torch.get_rng_state(),
             'cuda_rng_state_all': (
@@ -875,6 +901,24 @@ if __name__ == '__main__':
         '--diff-sharing', default='shared',
         choices=['shared', 'independent'],
         help='Share one difference encoder or use four scale-specific instances.',
+    )
+    parser.add_argument(
+        '--sdtr-scope', default='all',
+        choices=['all', 'shallow', 'deep'],
+        help=(
+            'Legacy Run13 SDTR scope used only with --diff-mode sdtr: '
+            'all, shallow, or deep. '
+            'Run14 should prefer --temporal-relation-mode.'
+        ),
+    )
+    parser.add_argument(
+        '--temporal-relation-mode', default=None,
+        choices=['off', 'shallow_replace', 'deep_replace', 'deep_residual'],
+        help=(
+            'Run14 temporal-relation mode. '
+            'Use with --diff-mode eaom and --diff-sharing independent. '
+            'Omit for historical Run13 compatibility.'
+        ),
     )
     parser.add_argument(
         '--supervision-mode', default='legacy',

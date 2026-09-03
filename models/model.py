@@ -946,7 +946,7 @@ class BaseNet(nn.Module):
         if decoder_mode != 'msa' and grmsa_mode != 'off':
             raise ValueError('GR-MSA modes apply only to decoder_mode="msa"')
 
-        self.use_eaom = diff_mode == 'eaom'
+        self.use_eaom = base_diff_mode == 'eaom'
         self.use_sfif = use_sfif
         self.use_prior = use_prior
         self.use_msca = use_msca
