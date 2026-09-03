@@ -479,10 +479,14 @@ def trainValidateSegmentation(args):
     train_data = myDataLoader.Dataset(
         'train', file_root=dataset_root, transform=trainDataset_main,
         list_name='train')
+    train_generator = make_generator(SEED)
+    val_generator = make_generator(SEED + 1)
+    test_generator = make_generator(SEED + 2)
+
     trainLoader = torch.utils.data.DataLoader(
         train_data, batch_size=args.batch_size, shuffle=True,
         num_workers=args.num_workers, pin_memory=False, drop_last=True,
-        worker_init_fn=seed_worker, generator=make_generator(SEED))
+        worker_init_fn=seed_worker, generator=train_generator)
 
     # Validation selects the best checkpoint; Run9 uses val.txt explicitly.
     val_data = myDataLoader.Dataset(
@@ -491,7 +495,7 @@ def trainValidateSegmentation(args):
     valLoader = torch.utils.data.DataLoader(
         val_data, shuffle=False, batch_size=args.batch_size,
         num_workers=args.num_workers, pin_memory=False,
-        worker_init_fn=seed_worker, generator=make_generator(SEED + 1))
+        worker_init_fn=seed_worker, generator=val_generator)
 
     # Held-out test.txt is evaluated once after loading the best val checkpoint.
     test_data = myDataLoader.Dataset(
@@ -500,7 +504,7 @@ def trainValidateSegmentation(args):
     testLoader = torch.utils.data.DataLoader(
         test_data, shuffle=False, batch_size=args.batch_size,
         num_workers=args.num_workers, pin_memory=False,
-        worker_init_fn=seed_worker, generator=make_generator(SEED + 2))
+        worker_init_fn=seed_worker, generator=test_generator)
 
     max_batches = len(trainLoader)
 
@@ -517,21 +521,49 @@ def trainValidateSegmentation(args):
     start_epoch = 0
     cur_iter = 0
     max_F1_val = 0.0
+    best_epoch = 0
     full_resume = False   # True = full checkpoint (model+opt+epoch); False = weights-only
 
     if args.resume and os.path.isfile(args.resume):
         print(f"=> loading checkpoint '{args.resume}'")
-        checkpoint = torch.load(args.resume)
+        checkpoint = torch.load(args.resume, weights_only=False)
         if isinstance(checkpoint, dict) and 'optimizer' in checkpoint:
             # Full checkpoint resume: model + optimizer + epoch + best_f1
+            if checkpoint.get('dataset', args.dataset) != args.dataset:
+                raise ValueError(
+                    f"Checkpoint dataset={checkpoint.get('dataset')!r} does "
+                    f"not match CLI dataset={args.dataset!r}"
+                )
+            if checkpoint.get('batch_size', args.batch_size) != args.batch_size:
+                raise ValueError(
+                    f"Checkpoint batch_size={checkpoint.get('batch_size')} "
+                    f"does not match CLI batch_size={args.batch_size}"
+                )
             validate_checkpoint_head_mode(checkpoint['state_dict'], args.head_mode)
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             start_epoch = checkpoint['epoch']
             cur_iter = checkpoint.get('cur_iter', start_epoch * max_batches)
             max_F1_val = checkpoint.get('best_f1', 0.0)
+            best_epoch = checkpoint.get('best_epoch', start_epoch)
+
+            # Restore the exact next-epoch data order and stochastic state.
+            if 'train_generator_state' in checkpoint:
+                train_generator.set_state(checkpoint['train_generator_state'])
+            if 'torch_rng_state' in checkpoint:
+                torch.set_rng_state(checkpoint['torch_rng_state'])
+            if args.onGPU and checkpoint.get('cuda_rng_state_all') is not None:
+                torch.cuda.set_rng_state_all(checkpoint['cuda_rng_state_all'])
+            if 'numpy_rng_state' in checkpoint:
+                np.random.set_state(checkpoint['numpy_rng_state'])
+            if 'python_rng_state' in checkpoint:
+                random.setstate(checkpoint['python_rng_state'])
+
             full_resume = True
-            print(f"=> resumed epoch {start_epoch}, best_f1={max_F1_val:.4f}")
+            print(
+                f"=> resumed after epoch {start_epoch}, "
+                f"best_f1={max_F1_val:.4f} @ epoch {best_epoch}"
+            )
         else:
             # Weights-only: best_model.pth or legacy format
             state_dict = checkpoint.get('state_dict', checkpoint)
@@ -597,8 +629,11 @@ def trainValidateSegmentation(args):
     print(f"Configuration saved to: {config_path}")
 
     # ---- training loop ----
-    best_epoch = start_epoch if full_resume else 0
     total_epochs = args.epochs
+    last_checkpoint_path = os.path.join(
+        args.savedir, 'last_checkpoint.pth.tar'
+    )
+    last_checkpoint_tmp = last_checkpoint_path + '.tmp'
 
     for epoch in range(start_epoch, total_epochs):
         t_epoch = time.time()
@@ -659,6 +694,28 @@ def trainValidateSegmentation(args):
             print('\n' + summary)
             logger.write(summary + '\n')
             logger.flush()
+
+        # Save the state after every fully completed epoch.  os.replace keeps
+        # the previous checkpoint intact if the process is killed mid-write.
+        checkpoint_payload = {
+            'epoch': epoch + 1,
+            'cur_iter': cur_iter,
+            'state_dict': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'best_f1': max_F1_val,
+            'best_epoch': best_epoch,
+            'dataset': args.dataset,
+            'batch_size': args.batch_size,
+            'train_generator_state': train_generator.get_state(),
+            'torch_rng_state': torch.get_rng_state(),
+            'cuda_rng_state_all': (
+                torch.cuda.get_rng_state_all() if args.onGPU else None
+            ),
+            'numpy_rng_state': np.random.get_state(),
+            'python_rng_state': random.getstate(),
+        }
+        torch.save(checkpoint_payload, last_checkpoint_tmp)
+        os.replace(last_checkpoint_tmp, last_checkpoint_path)
 
         torch.cuda.empty_cache()
 
@@ -721,6 +778,12 @@ def trainValidateSegmentation(args):
             f'best_epoch={best_epoch}\n'
             f'test_f1={score_test["F1"]:.6f}\n'
         )
+
+    # A completed job is resumed via .run_complete, so its rolling training
+    # checkpoint is no longer needed.  Keep only the selected best weights.
+    for checkpoint_file in (last_checkpoint_path, last_checkpoint_tmp):
+        if os.path.isfile(checkpoint_file):
+            os.remove(checkpoint_file)
 
     print(f"\nBest val F1 = {max_F1_val:.4f} @ epoch {best_epoch}")
     print(f"Output: {args.savedir}")
