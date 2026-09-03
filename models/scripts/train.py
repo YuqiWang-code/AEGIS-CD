@@ -45,9 +45,6 @@ def seed_worker(worker_id):
 
 
 def make_generator(seed):
-    generator = torch.Generator()
-    generator.manual_seed(seed)
-    return generator
 
 
 # =========================================================
@@ -460,6 +457,16 @@ def trainValidateSegmentation(args):
         sdtr_scope=args.sdtr_scope,
         temporal_relation_mode=args.temporal_relation_mode,
     )
+
+    current_protocol_signature = build_protocol_signature(
+        args, model
+    )
+
+    print(
+        'Run14 protocol signature prepared '
+        f'(version={current_protocol_signature["version"]})'
+    )
+
     if args.onGPU:
         model = model.cuda()
 
@@ -536,24 +543,63 @@ def trainValidateSegmentation(args):
     cur_iter = 0
     max_F1_val = 0.0
     best_epoch = 0
-    full_resume = False   # True = full checkpoint (model+opt+epoch); False = weights-only
+    full_resume = False
+    strict_protocol_resume = False
 
     if args.resume and os.path.isfile(args.resume):
         print(f"=> loading checkpoint '{args.resume}'")
         checkpoint = torch.load(args.resume, weights_only=False)
         if isinstance(checkpoint, dict) and 'optimizer' in checkpoint:
             # Full checkpoint resume: model + optimizer + epoch + best_f1
-            if checkpoint.get('dataset', args.dataset) != args.dataset:
-                raise ValueError(
-                    f"Checkpoint dataset={checkpoint.get('dataset')!r} does "
-                    f"not match CLI dataset={args.dataset!r}"
+
+            checkpoint_signature = checkpoint.get(
+                'protocol_signature'
+            )
+
+            if checkpoint_signature is not None:
+                validate_protocol_signature(
+                    checkpoint_signature,
+                    current_protocol_signature,
                 )
-            if checkpoint.get('batch_size', args.batch_size) != args.batch_size:
-                raise ValueError(
-                    f"Checkpoint batch_size={checkpoint.get('batch_size')} "
-                    f"does not match CLI batch_size={args.batch_size}"
+                strict_protocol_resume = True
+                print(
+                    '=> protocol_signature matched; '
+                    'strict full resume allowed'
                 )
-            validate_checkpoint_head_mode(checkpoint['state_dict'], args.head_mode)
+            else:
+                print(
+                    'WARNING: legacy full checkpoint has no '
+                    'protocol_signature; falling back to legacy '
+                    'dataset/batch-size/head-mode validation.'
+                )
+
+                if (
+                    checkpoint.get('dataset', args.dataset)
+                    != args.dataset
+                ):
+                    raise ValueError(
+                        f"Checkpoint dataset="
+                        f"{checkpoint.get('dataset')!r} does "
+                        f"not match CLI dataset={args.dataset!r}"
+                    )
+
+                if (
+                    checkpoint.get(
+                        'batch_size', args.batch_size
+                    )
+                    != args.batch_size
+                ):
+                    raise ValueError(
+                        f"Checkpoint batch_size="
+                        f"{checkpoint.get('batch_size')} "
+                        f"does not match CLI batch_size="
+                        f"{args.batch_size}"
+                    )
+
+            validate_checkpoint_head_mode(
+                checkpoint['state_dict'],
+                args.head_mode,
+            )
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             start_epoch = checkpoint['epoch']
@@ -579,18 +625,32 @@ def trainValidateSegmentation(args):
                 f"best_f1={max_F1_val:.4f} @ epoch {best_epoch}"
             )
         else:
-            # Weights-only: best_model.pth or legacy format
+            # Weights-only: best_model.pth or legacy format.
+            # This is not an exact training resume.
             state_dict = checkpoint.get('state_dict', checkpoint)
-            validate_checkpoint_head_mode(state_dict, args.head_mode)
+            validate_checkpoint_head_mode(
+                state_dict,
+                args.head_mode,
+            )
             model.load_state_dict(state_dict)
-            print(f"=> loaded weights only, fresh optimizer, starting epoch 0")
+            print(
+                'WARNING: loaded weights only; no full-resume '
+                'protocol validation is available. '
+                'Using a fresh optimizer and starting epoch 0.'
+            )
 
     # ---- log file header ----
     logFileLoc = os.path.join(args.savedir, args.logFile)
     if full_resume and os.path.isfile(logFileLoc):
         # Append to existing log
         logger = open(logFileLoc, 'a')
-        logger.write(f'\n# Resumed at epoch {start_epoch}\n')
+        logger.write(
+            f'\n# Resumed at epoch {start_epoch}\n'
+        )
+        logger.write(
+            '# Protocol resume: '
+            f'{"STRICT" if strict_protocol_resume else "LEGACY_FALLBACK"}\n'
+        )
     else:
         logger = open(logFileLoc, 'w')
         logger.write(banner + '\n')
@@ -643,6 +703,9 @@ def trainValidateSegmentation(args):
         'lambda_boundary': 0.2,
         'lambda_consistency': 0.1,
         'dice_reduction': args.dice_reduction,
+
+        # Strict full-resume experiment protocol.
+        'protocol_signature': current_protocol_signature,
     }
     config_path = os.path.join(args.savedir, 'run_config.json')
     with open(config_path, 'w') as f:
@@ -728,8 +791,10 @@ def trainValidateSegmentation(args):
             'dataset': args.dataset,
             'batch_size': args.batch_size,
 
-            # Full experiment configuration used to construct this checkpoint.
-            # Run14 resume validation will compare this against the current CLI.
+            # Strict Run14 full-resume protocol.
+            'protocol_signature': current_protocol_signature,
+
+            # Full human-readable experiment configuration.
             'run_config': config_dict,
 
             'train_generator_state': train_generator.get_state(),
