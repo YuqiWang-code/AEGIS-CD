@@ -45,6 +45,115 @@ def seed_worker(worker_id):
 
 
 def make_generator(seed):
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    return generator
+
+
+PROTOCOL_SIGNATURE_VERSION = 1
+
+
+def build_protocol_signature(args, model):
+    """Build the strict experiment protocol used for full-checkpoint resume."""
+    return {
+        'version': PROTOCOL_SIGNATURE_VERSION,
+
+        # Dataset / input protocol
+        'dataset': args.dataset,
+        'in_width': args.inWidth,
+        'in_height': args.inHeight,
+        'batch_size': args.batch_size,
+        'color_order': args.color_order,
+        'val_split': args.val_split,
+
+        # Optimisation / reproducibility protocol
+        'epochs': args.epochs,
+        'lr': args.lr,
+        'weight_decay': args.weight_decay,
+        'lr_mode': args.lr_mode,
+        'step_loss': args.step_loss,
+        'val_interval': args.val_interval,
+        'seed': args.seed,
+        'deterministic': args.deterministic,
+        'num_workers': args.num_workers,
+
+        # Data augmentation
+        'amp_mix': args.amp_mix,
+
+        # Difference / temporal relation
+        'diff_mode': args.diff_mode,
+        'base_diff_mode': model.base_diff_mode,
+        'diff_sharing': args.diff_sharing,
+        'sdtr_scope': args.sdtr_scope,
+        'temporal_relation_mode': args.temporal_relation_mode,
+        'temporal_relation_plan': list(model.temporal_relation_plan),
+
+        # Supervision
+        'supervision_mode': args.supervision_mode,
+        'dice_reduction': args.dice_reduction,
+        'ds_profile': args.ds_profile,
+
+        # Architecture
+        'use_prior': args.use_prior,
+        'use_msca': args.use_msca,
+        'use_tct': args.use_tct,
+        'use_lfds': args.use_lfds,
+        'amp_phase_mode': args.amp_phase_mode,
+        'encoder_fusion_mode': args.encoder_fusion_mode,
+        'decoder_mode': args.decoder_mode,
+        'head_mode': args.head_mode,
+        'scale_fusion': args.scale_fusion,
+        'boundary_mode': args.boundary_mode,
+        'consistency_mode': args.consistency_mode,
+
+        # Historical architecture switches
+        'use_sfif': args.use_sfif,
+        'use_stargate': args.use_stargate,
+        'grmsa_mode': args.grmsa_mode,
+
+        # Fixed auxiliary-loss coefficients
+        'lambda_freq': 0.2,
+        'lambda_boundary': 0.2,
+        'lambda_consistency': 0.1,
+    }
+
+
+def validate_protocol_signature(checkpoint_signature, current_signature):
+    """Fail-fast when a full checkpoint uses a different experiment protocol."""
+    if not isinstance(checkpoint_signature, dict):
+        raise ValueError(
+            'Checkpoint protocol_signature is not a dictionary.'
+        )
+
+    mismatches = []
+
+    all_keys = sorted(
+        set(checkpoint_signature.keys())
+        | set(current_signature.keys())
+    )
+
+    for key in all_keys:
+        checkpoint_value = checkpoint_signature.get(
+            key, '<MISSING>'
+        )
+        current_value = current_signature.get(
+            key, '<MISSING>'
+        )
+
+        if checkpoint_value != current_value:
+            mismatches.append(
+                f'  {key}: '
+                f'checkpoint={checkpoint_value!r}, '
+                f'current={current_value!r}'
+            )
+
+    if mismatches:
+        details = '\n'.join(mismatches)
+        raise ValueError(
+            'Checkpoint protocol mismatch. '
+            'Refusing full resume.\n'
+            f'{details}'
+        )
 
 
 # =========================================================
@@ -233,14 +342,30 @@ def adjust_learning_rate(args, optimizer, epoch, iter, max_batches, lr_factor=1)
 
 def count_flops(model, input_shape=(1, 3, 256, 256), device='cuda'):
     """Return THOP-registered ops in G; functional FFT/relation ops are omitted."""
+    was_training = model.training
+
     try:
         from thop import profile
+
+        model.eval()
+
         a = torch.randn(*input_shape).to(device)
         b = torch.randn(*input_shape).to(device)
-        flops, params = profile(model, inputs=(a, b), verbose=False)
+
+        with torch.no_grad():
+            flops, _params = profile(
+                model,
+                inputs=(a, b),
+                verbose=False,
+            )
+
         return flops / 1e9
+
     except Exception:
         return None
+
+    finally:
+        model.train(was_training)
 
 
 # =========================================================
@@ -567,6 +692,17 @@ def trainValidateSegmentation(args):
                     'strict full resume allowed'
                 )
             else:
+                # Run14's explicit temporal-relation API requires a strict
+                # protocol_signature.  Never resume it from an unverifiable
+                # historical full checkpoint.
+                if args.temporal_relation_mode is not None:
+                    raise ValueError(
+                        'Checkpoint has no protocol_signature, but the '
+                        'current run uses the Run14 '
+                        '--temporal-relation-mode API. '
+                        'Refusing unverifiable full resume.'
+                    )
+
                 print(
                     'WARNING: legacy full checkpoint has no '
                     'protocol_signature; falling back to legacy '
@@ -708,9 +844,32 @@ def trainValidateSegmentation(args):
         'protocol_signature': current_protocol_signature,
     }
     config_path = os.path.join(args.savedir, 'run_config.json')
-    with open(config_path, 'w') as f:
-        json.dump(config_dict, f, indent=2)
-    print(f"Configuration saved to: {config_path}")
+
+    if full_resume and not strict_protocol_resume:
+        legacy_resume_config_path = os.path.join(
+            args.savedir,
+            'run_config_legacy_resume_attempt.json',
+        )
+        with open(
+            legacy_resume_config_path,
+            'w',
+            encoding='utf-8',
+        ) as f:
+            json.dump(config_dict, f, indent=2)
+
+        print(
+            'Legacy resume configuration saved to: '
+            f'{legacy_resume_config_path}'
+        )
+    else:
+        with open(
+            config_path,
+            'w',
+            encoding='utf-8',
+        ) as f:
+            json.dump(config_dict, f, indent=2)
+
+        print(f'Configuration saved to: {config_path}')
 
     # ---- training loop ----
     total_epochs = args.epochs
