@@ -1,15 +1,25 @@
 """
 HFC Prior Injector v3 — Multi-Component Physical Prior Injection
 ==================================================================
-Upgrades over v2:
-  - 4 physical prior components replace single FFT high-pass
-  - P1: Illumination-invariant reflectance (log-chromaticity projection)
-  - P2: Structure tensor geometry (corner/edge/flat decomposition)
-  - P3: Shadow-aware confidence map (B/G ratio + brightness)
-  - P4: Multi-scale texture (Gabor filter bank + LBP)
-  - Asymmetric per-channel injection retained from v2
 
-Insertion point: immediately after HFEA, before DiffModule.
+Current three-component physical prior:
+
+  - P1: illumination-invariant reflectance
+        (log-chromaticity projection)
+  - P2: structure-tensor geometry
+        (corner / edge / flat decomposition)
+  - P4: multi-scale texture
+        (four Gabor orientations + local variance)
+
+P3 shadow-aware prior was removed in Phase 6.
+
+The three components are projected to the feature dimension and combined
+with learnable softmax weights.  The blended prior is injected additively
+into the two temporal feature streams through separate projections and
+per-channel scales initialised to 0.08.
+
+Insertion point:
+    encoder fusion -> Prior -> difference encoder
 """
 
 import torch
@@ -18,7 +28,7 @@ import torch.nn.functional as F
 
 
 class PriorGenerator(nn.Module):
-    """Generate 4 physical prior components from RGB images."""
+    """Generate and blend the P1/P2/P4 temporal physical priors."""
 
     def __init__(self, out_channels=64):
         super().__init__()
@@ -95,7 +105,7 @@ class PriorGenerator(nn.Module):
     # Phase 6 优化 D: _shadow_aware 方法已删除
 
     def _gabor_lbp_texture(self, rgb):
-        """P4: 4 Gabor orientations + local variance + zero-pad to 13ch."""
+        """P4: four Gabor responses plus local variance, returning 5 channels."""
         gray = 0.299 * rgb[:, 0:1] + 0.587 * rgb[:, 1:2] + 0.114 * rgb[:, 2:3]
         B, _, H, W = gray.shape
         eps = 1e-6

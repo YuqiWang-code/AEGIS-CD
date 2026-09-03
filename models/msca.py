@@ -1,29 +1,34 @@
 """
 MSCA — Multi-Scale Convolutional Attention
 ============================================
-Inserted between EAOM (DiffModule) and SFIF (DecoderFusion).
 
-Architecture
-------------
-Inputs:
-  - Context:  Concat(HFEA_f1_i, HFEA_f2_i)  [B, 2C, H, W]  (absolute semantics)
-  - Diff:     EAOM output diff_i             [B,  C, H, W]  (difference features)
+Four independent MSCA instances refine the four difference scales before
+DecoderFusion.
 
-Output:
-  - F_refined [B, C, H, W]  (modulated difference features)
+Inputs
+------
+- context_f1: pre-Prior encoder-fusion feature from T1 [B, C, H, W]
+- context_f2: pre-Prior encoder-fusion feature from T2 [B, C, H, W]
+- diff:       current difference feature             [B, C, H, W]
 
-Pipeline:
-1. Context alignment: 1×1 Conv 2C→C + BN + GELU
-2. Multi-scale DWConv branches: 3×3, 5×5, 7×7 (parallel, no routing)
-3. Selective Kernel Gating: GAP → MLP → 3× softmax → weighted sum
-4. Dual-Attention: channel attention (SE-style) → spatial attention (7×7 DWConv)
-5. Residual injection: F_refined = F_diff * M_msca + F_diff
+Pipeline
+--------
+1. Independently align T1/T2 context with separate 1x1 projections.
+2. Generate a soft fusion weight from concatenated aligned context.
+3. Apply four parallel depthwise branches: 1x1, 3x3, 5x5, 7x7.
+4. Selectively fuse the four branches with temperature-scaled SK softmax.
+5. Apply channel attention and parallel 3x3 + 5x5 spatial attention.
+6. Refine the difference feature with an explicit identity residual:
 
-Key design decisions:
-- Soft weighted fusion (no discrete Top-k) — avoids LAMoE routing collapse
-- Per-scale independent processing — no shared weights across decoder levels
-- Standard DWConv + BN (no strip convs) — stable training
-- No auxiliary loss
+       f_refined = diff + f_modulated * residual_strength
+
+Key design decisions
+--------------------
+- Four-scale independent MSCA instances.
+- Soft branch weighting; no hard Top-k routing.
+- Pre-Prior T1/T2 context is used for semantic guidance.
+- Explicit identity residual is retained.
+- No auxiliary supervision.
 """
 
 import torch
@@ -105,11 +110,12 @@ class MSCA(nn.Module):
     def forward(self, context_f1, context_f2, diff):
         """
         Args:
-            context_f1: HFEA T1 features  [B, C, H, W]
-            context_f2: HFEA T2 features  [B, C, H, W]
-            diff:       EAOM output       [B, C, H, W]
+            context_f1: pre-Prior T1 context feature [B, C, H, W]
+            context_f2: pre-Prior T2 context feature [B, C, H, W]
+            diff:       current difference feature   [B, C, H, W]
+
         Returns:
-            F_refined: [B, C, H, W]
+            refined difference feature [B, C, H, W]
         """
         # Phase 7 优化 B: Context 独立对齐（保留 T1/T2 差异信息）
         ctx_t1 = self.ctx_align_t1(context_f1)

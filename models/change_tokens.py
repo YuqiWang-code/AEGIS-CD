@@ -1,13 +1,31 @@
 """
-TCT — Temporal Change Tokens (Run13).
+TCT — Temporal Change Tokens
+============================
 
-Builds a small set of learnable change tokens from T1/T2 deep features, then
-re-injects global semantic change relations into the spatial diff.  Applied
-only to the deep scales (16x16, 8x8).
+Extracts compact data-dependent semantic tokens from the two temporal
+features with a shared token projector and shared Transformer stack.
 
-I/O contract identical to MSCA:
-    Input:  f1 [B, C, H, W], f2 [B, C, H, W], diff [B, C, H, W]
-    Output: refined diff [B, C, H, W]
+The temporal change representation is formed symmetrically as:
+
+    T_delta = abs(T1 - T2)
+
+The change tokens are then re-injected into the spatial difference feature
+through cross-attention.
+
+TCT is used only at the semantic 16x16 and 8x8 scales.
+
+Input
+-----
+f1   : [B, C, H, W]
+f2   : [B, C, H, W]
+diff : [B, C, H, W]
+
+Output
+------
+refined diff : [B, C, H, W]
+
+The residual scale eta is initialised to zero, so TCT starts from an
+identity mapping with respect to the incoming difference feature.
 """
 
 import torch
@@ -63,8 +81,9 @@ class TCT(nn.Module):
 
         self.token_projector = nn.Conv2d(C, token_num, 1, bias=False)
 
-        # Two distinct depth blocks; the same stack is applied to T1 and T2,
-        # which is the temporal weight-sharing required by the design.
+        # The Transformer stack contains `depth` distinct blocks.
+        # The same stack is applied to both T1 and T2, providing temporal
+        # weight sharing while allowing depth-wise parameter diversity.
         self.token_blocks = nn.ModuleList([
             _TokenTransformerBlock(C, num_heads) for _ in range(depth)
         ])
