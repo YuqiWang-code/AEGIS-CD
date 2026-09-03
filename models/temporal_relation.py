@@ -1,17 +1,19 @@
 """
-SDTR — Scale-Decoupled Temporal Relation (Run13).
+SDTR — Scale-Decoupled Temporal Relation.
 
-Replaces the shared absolute-difference diff with scale-specialised
-bi-temporal relation modelling:
+Shallow:
+    bidirectional local cosine correspondence.
 
-- shallow (H >= 32): bidirectional local cosine correspondence within a
-  small window, resolving sub-pixel mis-registration and appearance change.
-- deep (H <= 16): bidirectional lightweight cross-attention for semantic
-  temporal relation.
+Deep:
+    bidirectional lightweight cross-attention with two topologies:
 
-I/O contract identical to DiffModule / EAOM:
-    Input:  f1 [B, C, H, W], f2 [B, C, H, W]
-    Output: diff [B, C, H, W]
+    - replace:
+        historical Run13 behaviour; temporal relation directly produces
+        the difference representation.
+
+    - residual:
+        Run14 behaviour; EAOM remains the base difference and temporal
+        relation contributes a zero-initialised residual correction.
 """
 
 import torch
@@ -21,10 +23,11 @@ import torch.nn.functional as F
 
 class SDTR(nn.Module):
     VALID_MODES = ('auto', 'shallow', 'deep')
+    VALID_DEEP_RELATION_MODES = ('replace', 'residual')
 
     def __init__(self, channels=64, window_shallow_hi=5, window_shallow_lo=3,
-                 num_heads=4, beta_init=0.0, mode='auto', window=None,
-                 temperature=0.2):
+                num_heads=4, beta_init=0.0, mode='auto', window=None,
+                temperature=0.2, deep_relation_mode='replace'):
         super().__init__()
         C = channels
         if mode not in self.VALID_MODES:
@@ -33,12 +36,22 @@ class SDTR(nn.Module):
             raise ValueError('SDTR local window must be a positive odd integer')
         if temperature <= 0:
             raise ValueError('SDTR local-correlation temperature must be > 0')
+        if deep_relation_mode not in self.VALID_DEEP_RELATION_MODES:
+            raise ValueError(
+                f'Unknown deep_relation_mode={deep_relation_mode!r}; '
+                f'expected one of {self.VALID_DEEP_RELATION_MODES}'
+            )
+        if mode == 'shallow' and deep_relation_mode != 'replace':
+            raise ValueError(
+                'deep_relation_mode applies only to mode="deep" or mode="auto"'
+            )
         self.mode = mode
         self.window = window
         self.window_hi = window_shallow_hi
         self.window_lo = window_shallow_lo
         self.num_heads = num_heads
         self.temperature = float(temperature)
+        self.deep_relation_mode = deep_relation_mode
 
         if mode in ('auto', 'shallow'):
             # One shared metric projection makes cosine correspondence
@@ -54,19 +67,36 @@ class SDTR(nn.Module):
             self.beta_shallow = nn.Parameter(torch.tensor(beta_init))
 
         if mode in ('auto', 'deep'):
-            # ---- deep: lightweight cross-attention ----
+            # ---- deep: lightweight bidirectional cross-attention ----
             if C % num_heads != 0:
                 raise ValueError('channels must be divisible by num_heads')
+
             self.head_dim = C // num_heads
+
             self.wq = nn.Conv2d(C, C, 1, bias=False)
             self.wk = nn.Conv2d(C, C, 1, bias=False)
             self.wv = nn.Conv2d(C, C, 1, bias=False)
+
             self.out_proj = nn.Sequential(
                 nn.Conv2d(C, C, 3, 1, 1, groups=C, bias=False),
                 nn.Conv2d(C, C, 1, bias=False),
                 nn.BatchNorm2d(C),
                 nn.ReLU(inplace=True),
             )
+
+            # Run14: optional residual temporal-relation topology.
+            #
+            # replace:
+            #     identical to the historical Run13 deep SDTR.
+            #
+            # residual:
+            #     keep EAOM as the reliable base difference and let deep temporal
+            #     relation learn only a zero-initialised residual correction.
+            if self.deep_relation_mode == 'residual':
+                from models.eaom import EAOM
+
+                self.deep_anchor = EAOM(C)
+                self.alpha_deep = nn.Parameter(torch.tensor(0.0))
 
     def _window(self, f):
         if self.window is not None:
@@ -150,10 +180,32 @@ class SDTR(nn.Module):
         return out
 
     def _deep(self, f1, f2):
+        # Bidirectional temporal relation.
         r12 = self._cross_attend(f1, f2)
         r21 = self._cross_attend(f2, f1)
-        D = 0.5 * (torch.abs(f1 - r12) + torch.abs(f2 - r21))
-        return self.out_proj(D)
+
+        # Historical Run13 deep relation difference.
+        d_relation = 0.5 * (
+            torch.abs(f1 - r12)
+            + torch.abs(f2 - r21)
+        )
+
+        relation_delta = self.out_proj(d_relation)
+
+        # Historical Run13 behaviour: relation replaces the original
+        # difference representation.
+        if self.deep_relation_mode == 'replace':
+            return relation_delta
+
+        # Run14 residual behaviour:
+        # keep EAOM as the base representation and use temporal relation
+        # only as a learnable residual correction.
+        base_diff = self.deep_anchor(f1, f2)
+
+        return (
+            base_diff
+            + torch.tanh(self.alpha_deep) * relation_delta
+        )
 
     def forward(self, f1, f2):
         if f1.shape != f2.shape:

@@ -678,6 +678,7 @@ class BaseNet(nn.Module):
     VALID_HEAD_MODES = ('shared', 'independent')
     VALID_DIFF_MODES = ('cfdm', 'eaom', 'sdtr')
     VALID_DIFF_SHARING = ('shared', 'independent')
+    VALID_SDTR_SCOPES = ('all', 'shallow', 'deep')
     VALID_SUPERVISION_MODES = ('legacy', 'native')
     VALID_AMP_PHASE_MODES = ('off', 'lf_shared')
     VALID_ENCODER_FUSION_MODES = ('hfea', 'rephfea_pyr')
@@ -692,7 +693,8 @@ class BaseNet(nn.Module):
                  supervision_mode='legacy', amp_phase_mode='off',
                  use_lfds=False, use_tct=False,
                  encoder_fusion_mode='hfea', boundary_mode=None,
-                 consistency_mode='off'):
+                 consistency_mode='off',
+                 sdtr_scope='all'):
         super(BaseNet, self).__init__()
         if decoder_mode not in DecoderFusion.VALID_DECODER_MODES:
             raise ValueError(
@@ -725,6 +727,27 @@ class BaseNet(nn.Module):
             raise ValueError(
                 f'Unknown diff_sharing={diff_sharing!r}; '
                 f'expected one of {self.VALID_DIFF_SHARING}'
+            )
+        if sdtr_scope not in self.VALID_SDTR_SCOPES:
+            raise ValueError(
+                f'Unknown sdtr_scope={sdtr_scope!r}; '
+                f'expected one of {self.VALID_SDTR_SCOPES}'
+            )
+
+        if (
+            diff_mode == 'sdtr'
+            and sdtr_scope != 'all'
+            and diff_sharing != 'independent'
+        ):
+            raise ValueError(
+                'sdtr_scope="shallow" or "deep" requires '
+                'diff_sharing="independent"'
+            )
+
+        if diff_mode != 'sdtr' and sdtr_scope != 'all':
+            raise ValueError(
+                'sdtr_scope only applies when diff_mode="sdtr"; '
+                f'got diff_mode={diff_mode!r}, sdtr_scope={sdtr_scope!r}'
             )
         if supervision_mode not in self.VALID_SUPERVISION_MODES:
             raise ValueError(
@@ -776,6 +799,7 @@ class BaseNet(nn.Module):
         self.head_mode = head_mode
         self.diff_mode = diff_mode
         self.diff_sharing = diff_sharing
+        self.sdtr_scope = sdtr_scope
         self.supervision_mode = supervision_mode
         self.amp_phase_mode = amp_phase_mode
         self.encoder_fusion_mode = encoder_fusion_mode
@@ -803,22 +827,67 @@ class BaseNet(nn.Module):
             self.diff_adapters = None
 
         def make_diff(scale_idx=None):
+
+            # 1. 普通 EAOM
             if diff_mode == 'eaom':
                 from models.eaom import EAOM
                 return EAOM(64)
+
+            # 2. SDTR family
             if diff_mode == 'sdtr':
+                from models.eaom import EAOM
                 from models.temporal_relation import SDTR
-                if diff_sharing == 'independent':
-                    if scale_idx == 0:
-                        return SDTR(64, mode='shallow', window=5,
-                                    temperature=0.2)
-                    if scale_idx == 1:
-                        return SDTR(64, mode='shallow', window=3,
-                                    temperature=0.2)
-                    if scale_idx in (2, 3):
-                        return SDTR(64, mode='deep')
-                    raise ValueError('Independent SDTR requires scale_idx 0..3')
-                return SDTR(64)
+
+                # historical shared SDTR
+                if diff_sharing == 'shared':
+                    return SDTR(64)
+
+                if scale_idx not in (0, 1, 2, 3):
+                    raise ValueError(
+                        'Independent SDTR requires scale_idx 0..3'
+                    )
+
+                shallow_scale = scale_idx in (0, 1)
+                deep_scale = scale_idx in (2, 3)
+
+                use_sdtr = (
+                    self.sdtr_scope == 'all'
+                    or (
+                        self.sdtr_scope == 'shallow'
+                        and shallow_scale
+                    )
+                    or (
+                        self.sdtr_scope == 'deep'
+                        and deep_scale
+                    )
+                )
+
+                # This scale is outside the selected SDTR scope.
+                if not use_sdtr:
+                    return EAOM(64)
+
+                if scale_idx == 0:
+                    return SDTR(
+                        64,
+                        mode='shallow',
+                        window=5,
+                        temperature=0.2,
+                    )
+
+                if scale_idx == 1:
+                    return SDTR(
+                        64,
+                        mode='shallow',
+                        window=3,
+                        temperature=0.2,
+                    )
+
+                return SDTR(
+                    64,
+                    mode='deep',
+                )
+
+            # 3. historical CFDM
             return DiffModule(64)
 
         if diff_sharing == 'shared':
