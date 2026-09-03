@@ -1612,19 +1612,32 @@ def test_full_checkpoint_contract_contains_protocol_and_rng_fields():
         train_script.trainValidateSegmentation
     )
 
-    checkpoint_marker = (
-        'checkpoint_payload = {'
+    lines = source.splitlines()
+
+    start_index = None
+
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+
+        if stripped == 'checkpoint_payload = {':
+            start_index = index
+            break
+
+    assert start_index is not None, (
+        'Full checkpoint_payload assignment not found'
     )
 
-    assert checkpoint_marker in source
+    checkpoint_lines = []
 
-    checkpoint_block = source.split(
-        checkpoint_marker,
-        1,
-    )[1].split(
-        '}',
-        1,
-    )[0]
+    for line in lines[start_index:]:
+        checkpoint_lines.append(line)
+
+        if 'torch.save(' in line:
+            break
+
+    checkpoint_block = '\n'.join(
+        checkpoint_lines
+    )
 
     required_fields = (
         "'state_dict'",
