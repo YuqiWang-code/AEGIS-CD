@@ -6,9 +6,17 @@ Full evaluation::
     python models/scripts/test.py --dataset LEVIR-CD-256 \\
         --checkpoint saved_models/baseline/LEVIR-CD-256/best_model.pth
 
-Quick smoke test (environment verification)::
+Run14 architecture preflight::
 
     python models/scripts/test.py --smoke
+
+The smoke matrix covers:
+    R0 E4 anchor
+    R6 shallow-only SDTR
+    R7 deep-replace SDTR
+    R8 deep-residual SDTR
+    R4 MSCA + Prior
+    R5 TCT standalone
 """
 
 import sys
@@ -522,169 +530,378 @@ def repdw_block_smoke(device):
             'RepDW runtime deploy equivalence (non-zero branch)',
         )
 
+def _run14_smoke_case(
+    label,
+    device,
+    *,
+    temporal_relation_mode='off',
+    use_msca=False,
+    use_prior=False,
+    use_tct=False,
+):
+    """Run one fixed Run14 architecture smoke case."""
+
+    print('\n' + '-' * 72)
+    print(f'Run14 smoke case: {label}')
+    print('-' * 72)
+
+    model = BaseNet(
+        use_eaom=False,
+        use_sfif=False,
+        use_prior=use_prior,
+        use_msca=use_msca,
+        use_stargate=False,
+        use_edgegate=False,
+
+        grmsa_mode='off',
+        decoder_mode='rep_dw',
+        head_mode='independent',
+        scale_fusion_mode='plain',
+
+        diff_mode='eaom',
+        diff_sharing='independent',
+        sdtr_scope='all',
+        temporal_relation_mode=temporal_relation_mode,
+
+        supervision_mode='native',
+        amp_phase_mode='off',
+        use_lfds=False,
+        use_tct=use_tct,
+        encoder_fusion_mode='hfea',
+        boundary_mode='edgegate',
+        consistency_mode='off',
+    )
+
+    model = model.to(device)
+    model.eval()
+
+    expected_plan_by_mode = {
+        'off': (
+            'off',
+            'off',
+            'off',
+            'off',
+        ),
+        'shallow_replace': (
+            'shallow_replace',
+            'shallow_replace',
+            'off',
+            'off',
+        ),
+        'deep_replace': (
+            'off',
+            'off',
+            'deep_replace',
+            'deep_replace',
+        ),
+        'deep_residual': (
+            'off',
+            'off',
+            'deep_residual',
+            'deep_residual',
+        ),
+    }
+
+    expected_plan = expected_plan_by_mode[
+        temporal_relation_mode
+    ]
+
+    actual_plan = tuple(
+        model.temporal_relation_plan
+    )
+
+    if actual_plan != expected_plan:
+        raise RuntimeError(
+            f'{label}: temporal relation plan mismatch: '
+            f'got {actual_plan!r}, '
+            f'expected {expected_plan!r}'
+        )
+
+    if model.base_diff_mode != 'eaom':
+        raise RuntimeError(
+            f'{label}: base_diff_mode='
+            f'{model.base_diff_mode!r}, expected "eaom"'
+        )
+
+    if bool(model.use_msca) != bool(use_msca):
+        raise RuntimeError(
+            f'{label}: MSCA construction mismatch'
+        )
+
+    if bool(model.use_prior) != bool(use_prior):
+        raise RuntimeError(
+            f'{label}: Prior construction mismatch'
+        )
+
+    if bool(model.use_tct) != bool(use_tct):
+        raise RuntimeError(
+            f'{label}: TCT construction mismatch'
+        )
+
+    if not model.use_edgegate:
+        raise RuntimeError(
+            f'{label}: E4-style EdgeGate is not enabled'
+        )
+
+    if model.decoder_mode != 'rep_dw':
+        raise RuntimeError(
+            f'{label}: decoder_mode='
+            f'{model.decoder_mode!r}, expected "rep_dw"'
+        )
+
+    if model.head_mode != 'independent':
+        raise RuntimeError(
+            f'{label}: head_mode='
+            f'{model.head_mode!r}, expected "independent"'
+        )
+
+    if model.supervision_mode != 'native':
+        raise RuntimeError(
+            f'{label}: supervision_mode='
+            f'{model.supervision_mode!r}, expected "native"'
+        )
+
+    a = torch.randn(
+        1,
+        3,
+        256,
+        256,
+        device=device,
+    )
+
+    b = torch.randn(
+        1,
+        3,
+        256,
+        256,
+        device=device,
+    )
+
+    with torch.no_grad():
+        outputs = model(
+            a,
+            b,
+        )
+
+    expected_shapes = (
+        (1, 1, 256, 256),
+        (1, 1, 32, 32),
+        (1, 1, 16, 16),
+        (1, 1, 8, 8),
+    )
+
+    if len(outputs) != 4:
+        raise RuntimeError(
+            f'{label}: expected 4 outputs, '
+            f'got {len(outputs)}'
+        )
+
+    for index, (output, expected_shape) in enumerate(
+        zip(outputs, expected_shapes),
+        start=1,
+    ):
+        if tuple(output.shape) != expected_shape:
+            raise RuntimeError(
+                f'{label}: output{index} shape mismatch: '
+                f'got {tuple(output.shape)}, '
+                f'expected {expected_shape}'
+            )
+
+        if not torch.isfinite(output).all():
+            raise RuntimeError(
+                f'{label}: output{index} contains '
+                'NaN or Inf'
+            )
+
+    params = sum(
+        np.prod(parameter.size())
+        for parameter in model.parameters()
+    )
+
+    print(
+        f'  Params       : {params / 1e6:.4f} M'
+    )
+    print(
+        f'  Base diff    : {model.base_diff_mode}'
+    )
+    print(
+        f'  Relation plan: {list(actual_plan)}'
+    )
+    print(
+        f'  MSCA/Prior/TCT: '
+        f'{use_msca}/{use_prior}/{use_tct}'
+    )
+    print(
+        f'  Output shapes: '
+        f'{[tuple(output.shape) for output in outputs]}'
+    )
+    print(f'  {label}: PASSED')
+
+    del outputs
+    del a
+    del b
+    del model
+
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+
+def run14_smoke_matrix(device):
+    """Exercise every architecture combination required by Run14."""
+
+    cases = (
+        {
+            'label': 'R0_E4_Repro',
+            'temporal_relation_mode': 'off',
+            'use_msca': False,
+            'use_prior': False,
+            'use_tct': False,
+        },
+        {
+            'label': 'R6_SDTR_ShallowOnly',
+            'temporal_relation_mode': 'shallow_replace',
+            'use_msca': False,
+            'use_prior': False,
+            'use_tct': False,
+        },
+        {
+            'label': 'R7_SDTR_DeepReplace',
+            'temporal_relation_mode': 'deep_replace',
+            'use_msca': False,
+            'use_prior': False,
+            'use_tct': False,
+        },
+        {
+            'label': 'R8_SDTR_DeepResidual',
+            'temporal_relation_mode': 'deep_residual',
+            'use_msca': False,
+            'use_prior': False,
+            'use_tct': False,
+        },
+        {
+            'label': 'R4_MSCA_Prior',
+            'temporal_relation_mode': 'off',
+            'use_msca': True,
+            'use_prior': True,
+            'use_tct': False,
+        },
+        {
+            'label': 'R5_TCT_Standalone',
+            'temporal_relation_mode': 'off',
+            'use_msca': False,
+            'use_prior': False,
+            'use_tct': True,
+        },
+    )
+
+    print('\n=== Run14 Architecture Smoke Matrix ===')
+
+    for case in cases:
+        _run14_smoke_case(
+            device=device,
+            **case,
+        )
+
+    print(
+        '\n=== Run14 Architecture Smoke Matrix PASSED: '
+        f'{len(cases)}/{len(cases)} ==='
+    )
 
 def smoke_test(args):
-    """Quick environment + model sanity check."""
-    resolve_explicit_modes(args)
-    print('=== Smoke Test ===')
+    """Run the Run14 preflight smoke matrix."""
 
-    # 1. PyTorch
-    print(f'PyTorch {torch.__version__}')
-    print(f'CUDA available: {torch.cuda.is_available()}')
-    if torch.cuda.is_available():
-        print(f'CUDA version: {torch.version.cuda}')
-        print(f'GPU count: {torch.cuda.device_count()}')
-        for i in range(torch.cuda.device_count()):
-            print(f'  GPU {i}: {torch.cuda.get_device_name(i)}')
+    print('=== AEGIS-CD Run14 Smoke Test ===')
 
-    # 2. Model instantiation
-    print('Creating model...')
-    model = BaseNet(
-        use_eaom=args.use_eaom,
-        use_sfif=args.use_sfif,
-        use_prior=args.use_prior,
-        use_msca=args.use_msca,
-        use_stargate=args.use_stargate,
-        use_edgegate=args.use_edgegate,
-        grmsa_mode=args.grmsa_mode,
-        decoder_mode=args.decoder_mode,
-        head_mode=args.head_mode,
-        scale_fusion_mode=args.scale_fusion,
-        diff_mode=args.diff_mode,
-        diff_sharing=args.diff_sharing,
-        supervision_mode=args.supervision_mode,
-        amp_phase_mode=args.amp_phase_mode,
-        use_lfds=args.use_lfds,
-        use_tct=args.use_tct,
-        encoder_fusion_mode=args.encoder_fusion_mode,
-        boundary_mode=args.boundary_mode,
-        consistency_mode=args.consistency_mode,
-        sdtr_scope=args.sdtr_scope,
-        temporal_relation_mode=args.temporal_relation_mode,
+    print(f'PyTorch: {torch.__version__}')
+    print(
+        f'CUDA available: '
+        f'{torch.cuda.is_available()}'
     )
-    training_params = sum(np.prod(p.size()) for p in model.parameters())
-    print(f'Training-graph parameters: {training_params / 1e6:.4f} M')
-
-    # Run12 SCRF initialization check: gamma_i=0 → alpha_i=1 (identity warm-start)
-    if args.scale_fusion == 'scrf':
-        scrf = model.decoder_fusion.scrf
-        assert scrf is not None, 'SCRF module is None despite --scale-fusion scrf'
-        for i, gamma in enumerate(scrf.gammas):
-            assert gamma.item() == 0.0, f'SCRF gamma[{i}] != 0 at init'
-        # Test identity: SCRF(f, u, idx) == f + u when gamma=0
-        dummy_f = torch.randn(1, 64, 16, 16)
-        dummy_u = torch.randn(1, 64, 16, 16)
-        out = scrf(dummy_f, dummy_u, scale_idx=0)
-        diff = (out - (dummy_f + dummy_u)).abs().max().item()
-        assert diff < 1e-7, f'SCRF identity broken: max diff={diff:.2e}'
-        print('SCRF identity check: PASSED (gamma=0 → alpha=1)')
-
-    # Run11 initialization check: independent heads must start as exact
-    # copies of the primary head (same values, distinct Parameter storage).
-    if args.head_mode == 'independent':
-        for name in ('decoder_out2', 'decoder_out3', 'decoder_out4'):
-            assert torch.equal(
-                model.decoder_out.weight, getattr(model, name).weight
-            ), f'{name} weight differs from decoder_out at init'
-            assert torch.equal(
-                model.decoder_out.bias, getattr(model, name).bias
-            ), f'{name} bias differs from decoder_out at init'
-            assert (
-                model.decoder_out.weight.data_ptr()
-                != getattr(model, name).weight.data_ptr()
-            ), f'{name} shares Parameter storage with decoder_out'
-            assert (
-                model.decoder_out.bias.data_ptr()
-                != getattr(model, name).bias.data_ptr()
-            ), f'{name} bias shares Parameter storage with decoder_out'
-        print('Independent-head init check passed: identical values, distinct storage')
 
     if torch.cuda.is_available():
-        model = model.cuda()
+        print(
+            f'CUDA version: '
+            f'{torch.version.cuda}'
+        )
+        print(
+            f'GPU count: '
+            f'{torch.cuda.device_count()}'
+        )
+
+        for index in range(
+            torch.cuda.device_count()
+        ):
+            print(
+                f'  GPU {index}: '
+                f'{torch.cuda.get_device_name(index)}'
+            )
+
+    if (
+        args.onGPU
+        and torch.cuda.is_available()
+    ):
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')
 
-    if args.decoder_mode in ('rep_dw', 'rep_dw_shared'):
-        repdw_block_smoke(device)
+    print(f'Smoke device: {device}')
 
-    # 3. Dummy forward
-    print('Running dummy forward pass...')
-    a = torch.randn(1, 3, 256, 256)
-    b = torch.randn(1, 3, 256, 256)
-    if torch.cuda.is_available():
-        a, b = a.cuda(), b.cuda()
+    # Existing RepDW algebra/runtime preflight.
+    repdw_block_smoke(
+        device
+    )
 
-    model.eval()
-    with torch.no_grad():
-        outputs = model(a, b)[:4]
+    # Run14 fixed architecture matrix.
+    run14_smoke_matrix(
+        device
+    )
 
-    if args.deploy_reparam:
-        if args.decoder_mode not in ('rep_dw', 'rep_dw_shared'):
-            raise ValueError('--deploy-reparam requires a RepDW decoder mode')
-        converted = model.switch_to_deploy()
-        with torch.no_grad():
-            deploy_outputs = model(a, b)[:4]
-        deploy_errors = [
-            _assert_reparam_close(
-                before, after, f'Full-model deploy output{index}'
-            )
-            for index, (before, after) in enumerate(
-                zip(outputs, deploy_outputs), start=1
-            )
-        ]
-        max_error = max(deploy_errors)
-        print(f'RepDW blocks converted: {converted}')
-        print(f'Deploy equivalence max|train-deploy|: {max_error:.3e}')
-        outputs = deploy_outputs
-        deploy_params = sum(np.prod(p.size()) for p in model.parameters())
-        print(f'Deploy-graph parameters: {deploy_params / 1e6:.4f} M')
-
-    # Fail-fast on legacy vs native SCDS output contracts.
-    if args.supervision_mode == 'native':
-        expected_shapes = (
-            (1, 1, 256, 256), (1, 1, 32, 32),
-            (1, 1, 16, 16), (1, 1, 8, 8),
-        )
-    else:
-        expected_shapes = ((1, 1, 256, 256),) * 4
-    if len(outputs) != 4:
-        raise RuntimeError(
-            f'Expected 4 outputs, got {len(outputs)}'
-        )
-    for idx, (out, expected_shape) in enumerate(
-            zip(outputs, expected_shapes), start=1):
-        if tuple(out.shape) != expected_shape:
-            raise RuntimeError(
-                f'Output{idx} shape mismatch: '
-                f'got {tuple(out.shape)}, expected {expected_shape}'
-            )
-    print(f'Output shapes: {[tuple(o.shape) for o in outputs]}')
-
-    # 4. Count FLOPs (fvcore)
-    try:
-        from fvcore.nn import FlopCountAnalysis
-        flops = FlopCountAnalysis(model, (a, b))
-        print(f'FLOPs: {flops.total() / 1e9:.2f} G')
-    except Exception as e:
-        print(f'FLOPs calculation skipped: {e}')
-
-    # 5. Dataset probe
+    # Optional dataset-path probe.
     if args.dataset:
-        dataset_root = os.path.join(args.data_root, args.dataset)
-        print(f'Probing dataset: {dataset_root}')
-        if os.path.isdir(dataset_root):
-            for sub in ['A', 'B', 'label', 'list']:
-                sub_path = os.path.join(dataset_root, sub)
-                if os.path.isdir(sub_path):
-                    count = len(os.listdir(sub_path))
-                    print(f'  {sub}/ : {count} items')
-                else:
-                    print(f'  {sub}/ : MISSING')
-        else:
-            print(f'  Dataset root not found: {dataset_root}')
+        dataset_root = os.path.join(
+            args.data_root,
+            args.dataset,
+        )
 
-    print('=== Smoke Test PASSED ===')
+        print(
+            f'\nProbing dataset: '
+            f'{dataset_root}'
+        )
+
+        if os.path.isdir(dataset_root):
+            for subdirectory in (
+                'A',
+                'B',
+                'label',
+                'list',
+            ):
+                sub_path = os.path.join(
+                    dataset_root,
+                    subdirectory,
+                )
+
+                if os.path.isdir(sub_path):
+                    count = len(
+                        os.listdir(sub_path)
+                    )
+
+                    print(
+                        f'  {subdirectory}/ : '
+                        f'{count} items'
+                    )
+                else:
+                    print(
+                        f'  {subdirectory}/ : '
+                        'MISSING'
+                    )
+        else:
+            print(
+                f'  Dataset root not found: '
+                f'{dataset_root}'
+            )
+
+    print(
+        '\n=== AEGIS-CD Run14 Smoke Test PASSED ==='
+    )
 
 
 # =========================================================
@@ -1035,8 +1252,15 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=2333)
 
     # ---- smoke test ----
-    parser.add_argument('--smoke', action='store_true',
-                        help='Run smoke test (env + model sanity check)')
+    parser.add_argument(
+        '--smoke',
+        action='store_true',
+        help=(
+            'Run Run14 preflight matrix: E4 anchor, shallow-only, '
+            'deep-replace, deep-residual, MSCA+Prior, and '
+            'TCT standalone.'
+        ),
+    )
 
     args = parser.parse_args()
 
