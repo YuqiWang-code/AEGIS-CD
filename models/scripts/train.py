@@ -907,8 +907,20 @@ def trainValidateSegmentation(args):
                 for old in glob.glob(os.path.join(args.savedir, 'best_model*.pth.tar')):
                     os.remove(old)
                 best_name = f'best_model_F1={max_F1_val:.4f}.pth'
-                torch.save(model.state_dict(),
-                           os.path.join(args.savedir, best_name))
+
+                best_checkpoint_payload = {
+                    'state_dict': model.state_dict(),
+                    'protocol_signature': current_protocol_signature,
+                    'run_config': config_dict,
+                    'best_f1': max_F1_val,
+                    'best_epoch': best_epoch,
+                    'dataset': args.dataset,
+                }
+
+                torch.save(
+                    best_checkpoint_payload,
+                    os.path.join(args.savedir, best_name),
+                )
 
             logger.write('%-6d\t%-8.4f\t%-8.4f\t%-8.4f\t%-8.4f\t%-8.4f\t%-8.4f\t%-8.4f\t%-10.4f\n' %
                          (epoch + 1, lossTr, lossVal,
@@ -974,7 +986,18 @@ def trainValidateSegmentation(args):
     if best_files:
         best_path = best_files[-1]  # latest (should be only one)
         print(f"\nLoading best model: {os.path.basename(best_path)}")
-        model.load_state_dict(torch.load(best_path))
+
+        best_checkpoint = torch.load(
+            best_path,
+            weights_only=False,
+        )
+
+        best_state_dict = best_checkpoint.get(
+            'state_dict',
+            best_checkpoint,
+        )
+
+        model.load_state_dict(best_state_dict)
     else:
         raise RuntimeError(
             f"No best_model*.pth found in {args.savedir}. "

@@ -52,6 +52,276 @@ def resolve_explicit_modes(args):
         args.boundary_mode = 'edgegate' if args.use_edgegate else 'off'
 
 
+def cli_option_was_provided(option_name):
+    """Return True when an option was explicitly supplied on the CLI."""
+    prefix = option_name + '='
+    return any(
+        token == option_name or token.startswith(prefix)
+        for token in sys.argv[1:]
+    )
+
+
+def apply_checkpoint_value(
+    args,
+    signature,
+    signature_key,
+    arg_name,
+    cli_option,
+):
+    """Restore a checkpoint value unless the explicit CLI conflicts."""
+    if signature_key not in signature:
+        return
+
+    checkpoint_value = signature[signature_key]
+
+    if cli_option_was_provided(cli_option):
+        cli_value = getattr(args, arg_name)
+
+        if cli_value != checkpoint_value:
+            raise ValueError(
+                f'CLI/checkpoint protocol conflict for {cli_option}: '
+                f'CLI={cli_value!r}, '
+                f'checkpoint={checkpoint_value!r}'
+            )
+    else:
+        setattr(args, arg_name, checkpoint_value)
+
+
+def load_checkpoint_for_evaluation(checkpoint_path):
+    """Load raw legacy weights or a metadata-aware Run14 checkpoint."""
+    if not os.path.isfile(checkpoint_path):
+        raise FileNotFoundError(
+            f'Checkpoint not found: {checkpoint_path}'
+        )
+
+    print(f'Loading checkpoint metadata: {checkpoint_path}')
+
+    checkpoint = torch.load(
+        checkpoint_path,
+        weights_only=False,
+        map_location='cpu',
+    )
+
+    if (
+        isinstance(checkpoint, dict)
+        and 'state_dict' in checkpoint
+    ):
+        state_dict = checkpoint['state_dict']
+
+        protocol_signature = checkpoint.get(
+            'protocol_signature'
+        )
+
+        if protocol_signature is None:
+            run_config = checkpoint.get('run_config')
+            if isinstance(run_config, dict):
+                protocol_signature = run_config.get(
+                    'protocol_signature'
+                )
+
+        return state_dict, protocol_signature
+
+    # Historical best_model*.pth: raw state_dict.
+    return checkpoint, None
+
+
+def apply_checkpoint_protocol(args, signature):
+    """Restore evaluation/model protocol from a Run14 checkpoint."""
+    apply_checkpoint_value(
+        args, signature,
+        'dataset', 'dataset', '--dataset',
+    )
+
+    apply_checkpoint_value(
+        args, signature,
+        'in_width', 'inWidth', '--inWidth',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'in_height', 'inHeight', '--inHeight',
+    )
+
+    apply_checkpoint_value(
+        args, signature,
+        'color_order', 'color_order', '--color-order',
+    )
+
+    apply_checkpoint_value(
+        args, signature,
+        'diff_mode', 'diff_mode', '--diff-mode',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'diff_sharing', 'diff_sharing', '--diff-sharing',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'sdtr_scope', 'sdtr_scope', '--sdtr-scope',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'temporal_relation_mode',
+        'temporal_relation_mode',
+        '--temporal-relation-mode',
+    )
+
+    apply_checkpoint_value(
+        args, signature,
+        'supervision_mode',
+        'supervision_mode',
+        '--supervision-mode',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'dice_reduction',
+        'dice_reduction',
+        '--dice-reduction',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'ds_profile', 'ds_profile', '--ds-profile',
+    )
+
+    apply_checkpoint_value(
+        args, signature,
+        'use_prior', 'use_prior', '--use-prior',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'use_msca', 'use_msca', '--use-msca',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'use_tct', 'use_tct', '--use-tct',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'use_lfds', 'use_lfds', '--use-lfds',
+    )
+
+    apply_checkpoint_value(
+        args, signature,
+        'amp_phase_mode',
+        'amp_phase_mode',
+        '--amp-phase-mode',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'encoder_fusion_mode',
+        'encoder_fusion_mode',
+        '--encoder-fusion-mode',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'decoder_mode',
+        'decoder_mode',
+        '--decoder-mode',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'head_mode',
+        'head_mode',
+        '--head-mode',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'scale_fusion',
+        'scale_fusion',
+        '--scale-fusion',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'boundary_mode',
+        'boundary_mode',
+        '--boundary-mode',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'consistency_mode',
+        'consistency_mode',
+        '--consistency-mode',
+    )
+
+    apply_checkpoint_value(
+        args, signature,
+        'use_sfif', 'use_sfif', '--use-sfif',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'use_stargate',
+        'use_stargate',
+        '--use-stargate',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'grmsa_mode',
+        'grmsa_mode',
+        '--grmsa-mode',
+    )
+
+    apply_checkpoint_value(
+        args, signature,
+        'seed', 'seed', '--seed',
+    )
+    apply_checkpoint_value(
+        args, signature,
+        'deterministic',
+        'deterministic',
+        '--deterministic',
+    )
+
+    # Synchronise historical compatibility flags with the restored
+    # explicit configuration.
+    args.use_eaom = (
+        args.diff_mode == 'eaom'
+    )
+    args.use_edgegate = (
+        args.boundary_mode == 'edgegate'
+    )
+    if cli_option_was_provided('--use-eaom'):
+        if signature.get('diff_mode') != 'eaom':
+            raise ValueError(
+                'CLI/checkpoint protocol conflict: '
+                '--use-eaom was supplied but checkpoint '
+                f'diff_mode={signature.get("diff_mode")!r}'
+            )
+
+    if cli_option_was_provided('--use-edgegate'):
+        if signature.get('boundary_mode') != 'edgegate':
+            raise ValueError(
+                'CLI/checkpoint protocol conflict: '
+                '--use-edgegate was supplied but checkpoint '
+                f'boundary_mode={signature.get("boundary_mode")!r}'
+            )    
+
+
+def validate_effective_model_protocol(model, signature):
+    """Check the effective model topology after checkpoint restoration."""
+    if signature is None:
+        return
+
+    if 'base_diff_mode' in signature:
+        if model.base_diff_mode != signature['base_diff_mode']:
+            raise ValueError(
+                'Effective base_diff_mode mismatch: '
+                f'model={model.base_diff_mode!r}, '
+                f'checkpoint={signature["base_diff_mode"]!r}'
+            )
+
+    if 'temporal_relation_plan' in signature:
+        model_plan = list(model.temporal_relation_plan)
+        checkpoint_plan = list(
+            signature['temporal_relation_plan']
+        )
+
+        if model_plan != checkpoint_plan:
+            raise ValueError(
+                'Effective temporal_relation_plan mismatch: '
+                f'model={model_plan!r}, '
+                f'checkpoint={checkpoint_plan!r}'
+            )
+
+
 # =========================================================
 #  Validation with change-map output + inference timing
 # =========================================================
@@ -289,6 +559,8 @@ def smoke_test(args):
         encoder_fusion_mode=args.encoder_fusion_mode,
         boundary_mode=args.boundary_mode,
         consistency_mode=args.consistency_mode,
+        sdtr_scope=args.sdtr_scope,
+        temporal_relation_mode=args.temporal_relation_mode,
     )
     training_params = sum(np.prod(p.size()) for p in model.parameters())
     print(f'Training-graph parameters: {training_params / 1e6:.4f} M')
@@ -420,7 +692,30 @@ def smoke_test(args):
 # =========================================================
 
 def ValidateSegmentation(args):
+    state_dict, checkpoint_signature = (
+        load_checkpoint_for_evaluation(
+            args.checkpoint
+        )
+    )
+
+    if checkpoint_signature is not None:
+        apply_checkpoint_protocol(
+            args,
+            checkpoint_signature,
+        )
+        print(
+            'Checkpoint protocol_signature found; '
+            'evaluation configuration restored.'
+        )
+    else:
+        print(
+            'WARNING: legacy checkpoint has no '
+            'protocol_signature; using explicit/default CLI '
+            'configuration.'
+        )
+
     resolve_explicit_modes(args)
+
     # Run12: deterministic mode
     if args.deterministic:
         cudnn.benchmark = False
@@ -480,12 +775,41 @@ def ValidateSegmentation(args):
         encoder_fusion_mode=args.encoder_fusion_mode,
         boundary_mode=args.boundary_mode,
         consistency_mode=args.consistency_mode,
+        sdtr_scope=args.sdtr_scope,
+        temporal_relation_mode=args.temporal_relation_mode,
+    )
+
+    validate_effective_model_protocol(
+        model,
+        checkpoint_signature,
     )
     if args.onGPU:
         model = model.cuda()
 
-    total_params = sum(np.prod(p.size()) for p in model.parameters())
-    print(f'Total network parameters: {total_params / 1e6:.2f} M')
+    total_params = sum(
+        np.prod(p.size())
+        for p in model.parameters()
+    )
+
+    print(
+        f'Total network parameters: '
+        f'{total_params / 1e6:.2f} M'
+    )
+
+    print(
+        f'Effective base diff: '
+        f'{model.base_diff_mode}'
+    )
+
+    print(
+        f'Effective temporal relation plan: '
+        f'{list(model.temporal_relation_plan)}'
+    )
+
+    print(
+        f'Effective color order: '
+        f'{args.color_order}'
+    )
 
     # ---- transforms ----
     mean = [0.406, 0.456, 0.485, 0.406, 0.456, 0.485]
@@ -509,13 +833,20 @@ def ValidateSegmentation(args):
         num_workers=args.num_workers,
         pin_memory=False)
 
-    # ---- load checkpoint ----
-    if not os.path.isfile(args.checkpoint):
-        raise FileNotFoundError(f'Checkpoint not found: {args.checkpoint}')
-    print(f'Loading checkpoint: {args.checkpoint}')
-    state_dict = torch.load(args.checkpoint)
-    validate_checkpoint_head_mode(state_dict, args.head_mode)
-    model.load_state_dict(state_dict)
+    # ---- load checkpoint weights ----
+    validate_checkpoint_head_mode(
+        state_dict,
+        args.head_mode,
+    )
+
+    model.load_state_dict(
+        state_dict,
+        strict=True,
+    )
+
+    print(
+        'Checkpoint weights loaded with strict=True'
+    )
 
     stripped = model.strip_training_only_modules()
     if stripped:
@@ -603,6 +934,27 @@ if __name__ == '__main__':
         help='Difference-encoder sharing; must match the checkpoint.',
     )
     parser.add_argument(
+        '--sdtr-scope', default='all',
+        choices=['all', 'shallow', 'deep'],
+        help=(
+            'Legacy Run13 SDTR scope. '
+            'Metadata-aware Run14 checkpoints restore this automatically.'
+        ),
+    )
+    parser.add_argument(
+        '--temporal-relation-mode', default=None,
+        choices=[
+            'off',
+            'shallow_replace',
+            'deep_replace',
+            'deep_residual',
+        ],
+        help=(
+            'Run14 temporal-relation mode. '
+            'Metadata-aware checkpoints restore this automatically.'
+        ),
+    )
+    parser.add_argument(
         '--supervision-mode', default='legacy',
         choices=['legacy', 'native'],
         help='legacy full-resolution DS or native SCDS outputs.',
@@ -652,8 +1004,13 @@ if __name__ == '__main__':
     parser.add_argument(
         '--color-order', default='legacy',
         choices=['legacy', 'fixed'],
-        help='ToTensor color order: legacy (Run10/11 bug) or fixed (correct T1/T2). '
-             'Default legacy for historical compatibility; Run12 scripts should explicitly use fixed.',
+        help=(
+            'ToTensor color order. '
+            'For metadata-aware checkpoints this value is restored '
+            'from protocol_signature; an explicitly supplied conflicting '
+            'CLI value fails fast. Legacy raw checkpoints retain the '
+            'historical default.'
+        ),
     )
     parser.add_argument(
         '--eval-split', default='test',
