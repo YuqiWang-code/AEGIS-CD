@@ -679,6 +679,17 @@ class BaseNet(nn.Module):
     VALID_DIFF_MODES = ('cfdm', 'eaom', 'sdtr')
     VALID_DIFF_SHARING = ('shared', 'independent')
     VALID_SDTR_SCOPES = ('all', 'shallow', 'deep')
+
+    # Run14 preferred configuration axis:
+    # the base difference operator and temporal-relation mechanism are
+    # configured separately.
+    VALID_TEMPORAL_RELATION_MODES = (
+        'off',
+        'shallow_replace',
+        'deep_replace',
+        'deep_residual',
+    )
+
     VALID_SUPERVISION_MODES = ('legacy', 'native')
     VALID_AMP_PHASE_MODES = ('off', 'lf_shared')
     VALID_ENCODER_FUSION_MODES = ('hfea', 'rephfea_pyr')
@@ -694,7 +705,8 @@ class BaseNet(nn.Module):
                  use_lfds=False, use_tct=False,
                  encoder_fusion_mode='hfea', boundary_mode=None,
                  consistency_mode='off',
-                 sdtr_scope='all'):
+                 sdtr_scope='all',
+                 temporal_relation_mode=None):
         super(BaseNet, self).__init__()
         if decoder_mode not in DecoderFusion.VALID_DECODER_MODES:
             raise ValueError(
@@ -735,20 +747,169 @@ class BaseNet(nn.Module):
             )
 
         if (
-            diff_mode == 'sdtr'
-            and sdtr_scope != 'all'
-            and diff_sharing != 'independent'
+            temporal_relation_mode is not None
+            and temporal_relation_mode not in self.VALID_TEMPORAL_RELATION_MODES
         ):
             raise ValueError(
-                'sdtr_scope="shallow" or "deep" requires '
-                'diff_sharing="independent"'
+                f'Unknown temporal_relation_mode={temporal_relation_mode!r}; '
+                f'expected one of {self.VALID_TEMPORAL_RELATION_MODES}'
             )
 
-        if diff_mode != 'sdtr' and sdtr_scope != 'all':
-            raise ValueError(
-                'sdtr_scope only applies when diff_mode="sdtr"; '
-                f'got diff_mode={diff_mode!r}, sdtr_scope={sdtr_scope!r}'
+        # ------------------------------------------------------------------
+        # Difference / temporal-relation configuration normalisation
+        # ------------------------------------------------------------------
+        #
+        # Legacy API:
+        #     diff_mode='sdtr', sdtr_scope=...
+        #
+        # Preferred Run14 API:
+        #     diff_mode='eaom'
+        #     temporal_relation_mode={
+        #         off,
+        #         shallow_replace,
+        #         deep_replace,
+        #         deep_residual,
+        #     }
+        #
+        # Never allow both APIs to control temporal relation simultaneously.
+        legacy_sdtr_request = (
+            diff_mode == 'sdtr'
+            and temporal_relation_mode is None
+        )
+
+        if temporal_relation_mode is not None:
+            if diff_mode == 'sdtr':
+                raise ValueError(
+                    'Do not combine legacy diff_mode="sdtr" with '
+                    'temporal_relation_mode. '
+                    'Use diff_mode="eaom" with temporal_relation_mode '
+                    'for the Run14 API.'
+                )
+
+            if sdtr_scope != 'all':
+                raise ValueError(
+                    'sdtr_scope is a legacy diff_mode="sdtr" option and '
+                    'must remain "all" when temporal_relation_mode is used.'
+                )
+
+            if (
+                temporal_relation_mode != 'off'
+                and diff_mode != 'eaom'
+            ):
+                raise ValueError(
+                    'Temporal relation currently requires '
+                    'diff_mode="eaom" as its base difference operator.'
+                )
+
+            if (
+                temporal_relation_mode != 'off'
+                and diff_sharing != 'independent'
+            ):
+                raise ValueError(
+                    'Temporal relation modes require '
+                    'diff_sharing="independent".'
+                )
+
+        else:
+            # Historical Run13 validation.
+            if (
+                diff_mode == 'sdtr'
+                and sdtr_scope != 'all'
+                and diff_sharing != 'independent'
+            ):
+                raise ValueError(
+                    'sdtr_scope="shallow" or "deep" requires '
+                    'diff_sharing="independent"'
+                )
+
+            if diff_mode != 'sdtr' and sdtr_scope != 'all':
+                raise ValueError(
+                    'sdtr_scope only applies when diff_mode="sdtr"; '
+                    f'got diff_mode={diff_mode!r}, '
+                    f'sdtr_scope={sdtr_scope!r}'
+                )
+        # ------------------------------------------------------------------
+        # Normalised base difference operator
+        # ------------------------------------------------------------------
+        #
+        # Historical diff_mode='sdtr' replaced EAOM entirely.  For Run14
+        # configuration semantics, however, SDTR is treated as a temporal
+        # relation mechanism on top of an EAOM base.
+        if legacy_sdtr_request:
+            base_diff_mode = 'eaom'
+        else:
+            base_diff_mode = diff_mode
+        # ------------------------------------------------------------------
+        # Per-scale temporal-relation execution plan
+        #
+        # scale 0 = 64x64
+        # scale 1 = 32x32
+        # scale 2 = 16x16
+        # scale 3 =  8x8
+        # ------------------------------------------------------------------
+        if legacy_sdtr_request:
+            if sdtr_scope == 'all':
+                temporal_relation_plan = (
+                    'shallow_replace',
+                    'shallow_replace',
+                    'deep_replace',
+                    'deep_replace',
+                )
+            elif sdtr_scope == 'shallow':
+                temporal_relation_plan = (
+                    'shallow_replace',
+                    'shallow_replace',
+                    'off',
+                    'off',
+                )
+            else:  # sdtr_scope == 'deep'
+                temporal_relation_plan = (
+                    'off',
+                    'off',
+                    'deep_replace',
+                    'deep_replace',
+                )
+
+        elif temporal_relation_mode == 'shallow_replace':
+            temporal_relation_plan = (
+                'shallow_replace',
+                'shallow_replace',
+                'off',
+                'off',
             )
+
+        elif temporal_relation_mode == 'deep_replace':
+            temporal_relation_plan = (
+                'off',
+                'off',
+                'deep_replace',
+                'deep_replace',
+            )
+
+        elif temporal_relation_mode == 'deep_residual':
+            temporal_relation_plan = (
+                'off',
+                'off',
+                'deep_residual',
+                'deep_residual',
+            )
+
+        else:
+            # Includes:
+            #   temporal_relation_mode='off'
+            #   temporal_relation_mode=None with EAOM/CFDM legacy configuration
+            temporal_relation_plan = (
+                'off',
+                'off',
+                'off',
+                'off',
+            )
+        # Historical shared SDTR used one auto-mode SDTR instance at all scales.
+        # Preserve that exact topology only for legacy checkpoint compatibility.
+        legacy_shared_sdtr = (
+            legacy_sdtr_request
+            and diff_sharing == 'shared'
+        )
         if supervision_mode not in self.VALID_SUPERVISION_MODES:
             raise ValueError(
                 f'Unknown supervision_mode={supervision_mode!r}; '
@@ -797,9 +958,17 @@ class BaseNet(nn.Module):
         self.grmsa_mode = grmsa_mode
         self.decoder_mode = decoder_mode
         self.head_mode = head_mode
+        # Requested historical mode, retained for checkpoint/config compatibility.
         self.diff_mode = diff_mode
+
+        # Normalised Run14 semantics.
+        self.base_diff_mode = base_diff_mode
         self.diff_sharing = diff_sharing
         self.sdtr_scope = sdtr_scope
+        self.temporal_relation_mode = temporal_relation_mode
+        self.temporal_relation_plan = temporal_relation_plan
+        self.legacy_shared_sdtr = legacy_shared_sdtr
+
         self.supervision_mode = supervision_mode
         self.amp_phase_mode = amp_phase_mode
         self.encoder_fusion_mode = encoder_fusion_mode
@@ -826,69 +995,109 @@ class BaseNet(nn.Module):
             )
             self.diff_adapters = None
 
-        def make_diff(scale_idx=None):
-
-            # 1. 普通 EAOM
-            if diff_mode == 'eaom':
+        def make_base_diff():
+            """Construct the configured base difference operator."""
+            if self.base_diff_mode == 'eaom':
                 from models.eaom import EAOM
                 return EAOM(64)
 
-            # 2. SDTR family
-            if diff_mode == 'sdtr':
-                from models.eaom import EAOM
+            if self.base_diff_mode == 'cfdm':
+                return DiffModule(64)
+
+            raise RuntimeError(
+                f'Unsupported normalised base_diff_mode='
+                f'{self.base_diff_mode!r}'
+            )
+
+
+        def make_diff(scale_idx=None):
+            """Construct the effective per-scale difference/relation module."""
+
+            # --------------------------------------------------------------
+            # Historical shared SDTR compatibility path.
+            #
+            # Keep exactly one auto-mode SDTR instance so old shared-SDTR
+            # checkpoints retain their historical parameter topology.
+            # --------------------------------------------------------------
+            if self.legacy_shared_sdtr:
                 from models.temporal_relation import SDTR
+                return SDTR(64)
 
-                # historical shared SDTR
-                if diff_sharing == 'shared':
-                    return SDTR(64)
+            # No temporal relation is allowed with the new API when the
+            # difference operator itself is shared.  Therefore this is simply
+            # the shared base operator.
+            if self.diff_sharing == 'shared':
+                return make_base_diff()
 
-                if scale_idx not in (0, 1, 2, 3):
-                    raise ValueError(
-                        'Independent SDTR requires scale_idx 0..3'
-                    )
-
-                shallow_scale = scale_idx in (0, 1)
-                deep_scale = scale_idx in (2, 3)
-
-                use_sdtr = (
-                    self.sdtr_scope == 'all'
-                    or (
-                        self.sdtr_scope == 'shallow'
-                        and shallow_scale
-                    )
-                    or (
-                        self.sdtr_scope == 'deep'
-                        and deep_scale
-                    )
+            if scale_idx not in (0, 1, 2, 3):
+                raise ValueError(
+                    'Independent difference modules require scale_idx 0..3'
                 )
 
-                # This scale is outside the selected SDTR scope.
-                if not use_sdtr:
-                    return EAOM(64)
+            relation_mode = self.temporal_relation_plan[scale_idx]
 
-                if scale_idx == 0:
-                    return SDTR(
-                        64,
-                        mode='shallow',
-                        window=5,
-                        temperature=0.2,
+            # --------------------------------------------------------------
+            # No temporal relation at this scale:
+            # execute the configured base difference operator.
+            # --------------------------------------------------------------
+            if relation_mode == 'off':
+                return make_base_diff()
+
+            from models.temporal_relation import SDTR
+
+            # --------------------------------------------------------------
+            # Shallow replacement:
+            # 64x64 uses 5x5 correspondence;
+            # 32x32 uses 3x3 correspondence.
+            # --------------------------------------------------------------
+            if relation_mode == 'shallow_replace':
+                if scale_idx not in (0, 1):
+                    raise RuntimeError(
+                        'shallow_replace is valid only for scales 0 and 1'
                     )
 
-                if scale_idx == 1:
-                    return SDTR(
-                        64,
-                        mode='shallow',
-                        window=3,
-                        temperature=0.2,
+                window = 5 if scale_idx == 0 else 3
+
+                return SDTR(
+                    64,
+                    mode='shallow',
+                    window=window,
+                    temperature=0.2,
+                )
+
+            # --------------------------------------------------------------
+            # Historical Run13 deep SDTR replacement.
+            # --------------------------------------------------------------
+            if relation_mode == 'deep_replace':
+                if scale_idx not in (2, 3):
+                    raise RuntimeError(
+                        'deep_replace is valid only for scales 2 and 3'
                     )
 
                 return SDTR(
                     64,
                     mode='deep',
+                    deep_relation_mode='replace',
                 )
 
-            # 3. historical CFDM
-            return DiffModule(64)
+            # --------------------------------------------------------------
+            # Run14 deep temporal-relation residual augmentation.
+            # --------------------------------------------------------------
+            if relation_mode == 'deep_residual':
+                if scale_idx not in (2, 3):
+                    raise RuntimeError(
+                        'deep_residual is valid only for scales 2 and 3'
+                    )
+
+                return SDTR(
+                    64,
+                    mode='deep',
+                    deep_relation_mode='residual',
+                )
+
+            raise RuntimeError(
+                f'Unknown temporal relation plan entry={relation_mode!r}'
+            )
 
         if diff_sharing == 'shared':
             self.diff = make_diff()

@@ -41,9 +41,9 @@ class SDTR(nn.Module):
                 f'Unknown deep_relation_mode={deep_relation_mode!r}; '
                 f'expected one of {self.VALID_DEEP_RELATION_MODES}'
             )
-        if mode == 'shallow' and deep_relation_mode != 'replace':
+        if deep_relation_mode == 'residual' and mode != 'deep':
             raise ValueError(
-                'deep_relation_mode applies only to mode="deep" or mode="auto"'
+                'deep_relation_mode="residual" requires mode="deep"'
             )
         self.mode = mode
         self.window = window
