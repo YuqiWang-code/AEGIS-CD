@@ -77,44 +77,15 @@ def build_protocol_signature(args, model):
         'deterministic': args.deterministic,
         'num_workers': args.num_workers,
 
-        # Data augmentation
-        'amp_mix': args.amp_mix,
-
-        # Difference / temporal relation
+        # Architecture
         'diff_mode': args.diff_mode,
-        'base_diff_mode': model.base_diff_mode,
         'diff_sharing': args.diff_sharing,
-        'sdtr_scope': args.sdtr_scope,
-        'temporal_relation_mode': args.temporal_relation_mode,
-        'temporal_relation_plan': list(model.temporal_relation_plan),
-
-        # Supervision
         'supervision_mode': args.supervision_mode,
         'dice_reduction': args.dice_reduction,
         'ds_profile': args.ds_profile,
-
-        # Architecture
-        'use_prior': args.use_prior,
-        'use_msca': args.use_msca,
-        'use_tct': args.use_tct,
-        'use_lfds': args.use_lfds,
-        'amp_phase_mode': args.amp_phase_mode,
-        'encoder_fusion_mode': args.encoder_fusion_mode,
         'decoder_mode': args.decoder_mode,
         'head_mode': args.head_mode,
-        'scale_fusion': args.scale_fusion,
         'boundary_mode': args.boundary_mode,
-        'consistency_mode': args.consistency_mode,
-
-        # Historical architecture switches
-        'use_sfif': args.use_sfif,
-        'use_stargate': args.use_stargate,
-        'grmsa_mode': args.grmsa_mode,
-
-        # Fixed auxiliary-loss coefficients
-        'lambda_freq': 0.2,
-        'lambda_boundary': 0.2,
-        'lambda_consistency': 0.1,
     }
 
 
@@ -161,35 +132,16 @@ def validate_protocol_signature(checkpoint_signature, current_signature):
 # =========================================================
 
 from models.utils.losses import DS_PROFILES, run13_supervised_loss
-from models.utils.consistency import (
-    amplitude_mix,
-    consistency_loss,
-    freeze_batchnorm_running_stats,
-)
-
-
-# Normalize runs on OpenCV BGR channels, then ToTensor converts each temporal
-# image to RGB.  Model inputs therefore carry RGB-ordered statistics.
-_RGB_MEAN_6 = (0.485, 0.456, 0.406, 0.485, 0.456, 0.406)
-_RGB_STD_6 = (0.229, 0.224, 0.225, 0.229, 0.224, 0.225)
 
 
 def supervised_forward(args, model, pre_img, post_img, targets):
-    """Forward main predictions plus training-only Run13 heads when needed."""
-    need_aux = args.use_lfds or args.boundary_mode == 'bdsr'
-    if need_aux:
-        outputs, aux = model(pre_img, post_img, return_aux=True)
-    else:
-        outputs = model(pre_img, post_img)
-        aux = {}
+    """Forward main predictions and compute the SCDS loss."""
+    outputs = model(pre_img, post_img)
     loss, components = run13_supervised_loss(
         outputs,
         targets,
         profile=args.ds_profile,
         supervision_mode=args.supervision_mode,
-        aux=aux,
-        lambda_freq=0.2,
-        lambda_boundary=0.2,
         dice_reduction=args.dice_reduction,
     )
     return outputs, loss, components
@@ -275,18 +227,6 @@ def train_one_epoch(args, train_loader, model, optimizer, epoch,
             args, model, pre_img_var, post_img_var, target_var
         )
         output, output2, output3, output4 = outputs
-
-        if args.consistency_mode == 'baic':
-            pair = torch.cat([pre_img_var, post_img_var], dim=1)
-            mixed = amplitude_mix(
-                pair, r=0.125, mean=_RGB_MEAN_6, std=_RGB_STD_6
-            )
-            with freeze_batchnorm_running_stats(model):
-                student_outputs = model(mixed[:, 0:3], mixed[:, 3:6])
-            components['consistency'] = consistency_loss(
-                output, student_outputs[0], conf=0.9
-            )
-            loss = loss + 0.1 * components['consistency']
 
         pred = torch.where(output > 0.5,
                            torch.ones_like(output),
@@ -401,54 +341,21 @@ def print_banner(args, model, dataset_root, train_loader, val_loader, test_loade
 
     # ---- Module switches ----
     switches = []
-    for sw in ['use_eaom', 'use_sfif', 'use_prior', 'use_msca',
-               'use_stargate', 'use_edgegate', 'use_lfds', 'use_tct']:
-        val = getattr(args, sw, False)
-        marker = '✅ ON' if val else '❌ off'
-        switches.append(f'{sw}={marker}')
-    switches.append(f'grmsa_mode={args.grmsa_mode}')
     switches.append(f'decoder_mode={args.decoder_mode}')
     switches.append(f'head_mode={args.head_mode}')
     switches.append(f'ds_profile={args.ds_profile}')
     switches.append(f'diff_mode={args.diff_mode}')
     switches.append(f'diff_sharing={args.diff_sharing}')
-    switches.append(f'sdtr_scope={args.sdtr_scope}')
-    switches.append(
-        f'temporal_relation_mode={args.temporal_relation_mode}'
-    )
     switches.append(f'supervision_mode={args.supervision_mode}')
-    switches.append(f'amp_phase_mode={args.amp_phase_mode}')
-    switches.append(f'encoder_fusion_mode={args.encoder_fusion_mode}')
     switches.append(f'boundary_mode={args.boundary_mode}')
-    switches.append(f'consistency_mode={args.consistency_mode}')
     lines.append(f'  Modules       : {", ".join(switches)}')
 
-    # Run14: also print the effective normalised topology.
-    lines.append(
-        f'  Base diff     : {model.base_diff_mode}'
-    )
-    lines.append(
-        f'  Relation plan : {list(model.temporal_relation_plan)}'
-    )
-
-    if args.use_sfif:
-        deployable = 'no (legacy SFIF)'
-        rep_branches = 'n/a'
-        scale_sharing = 'independent (4× SFIF)'
-    elif args.decoder_mode == 'rep_dw':
+    if args.decoder_mode == 'rep_dw':
         deployable = 'yes (RepDW branches → DW5×5)'
         rep_branches = 'DW5×5 + DW3×3 + DW1×1 + identity'
         scale_sharing = 'independent (4× RepDW)'
-    elif args.decoder_mode == 'rep_dw_shared':
-        deployable = 'yes (RepDW branches → DW5×5)'
-        rep_branches = 'DW5×5 + DW3×3 + DW1×1 + identity'
-        scale_sharing = 'shared (1× RepDW across 4 scales)'
-    elif args.decoder_mode == 'plain_dw':
-        deployable = 'no reparameterization (single DW5×5 branch)'
-        rep_branches = 'DW5×5 only'
-        scale_sharing = 'independent (4× PlainDW)'
     else:
-        deployable = 'no (legacy MSA/GR-MSA)'
+        deployable = 'no (legacy MSA)'
         rep_branches = 'n/a'
         scale_sharing = 'shared (1× MSA across 4 scales)'
     lines.append(f'  Decoder mode  : {args.decoder_mode}')
@@ -483,17 +390,8 @@ def print_banner(args, model, dataset_root, train_loader, val_loader, test_loade
         f'weights={DS_PROFILES[args.ds_profile]}, '
         f'dice={args.dice_reduction}'
     )
-    if args.use_lfds:
-        lines.append('  LFDS loss     : 0.2 × BCEDice (16×16 local frequency)')
-    if args.boundary_mode == 'bdsr':
-        lines.append('  Boundary loss : 0.2 × BCEDice (dilate-erode target)')
-    if args.consistency_mode == 'baic':
-        lines.append('  BAIC loss     : 0.1 × confidence-masked L1')
-
     # ---- Run12 configuration ----
     lines.append(f'  Color order   : {args.color_order}')
-    lines.append(f'  Scale fusion  : {args.scale_fusion}')
-    lines.append(f'  Amp augment   : {"ON" if args.amp_mix else "OFF"}')
     lines.append(f'  Deterministic : {"ON" if args.deterministic else "OFF"}')
 
     lines.append(f'  Seed          : {args.seed}')
@@ -517,14 +415,6 @@ def print_banner(args, model, dataset_root, train_loader, val_loader, test_loade
 def trainValidateSegmentation(args):
     t_start = time.time()
 
-    # Resolve historical boolean flags into the explicit Run13 modes before
-    # logging/config serialization.  Old command lines remain reproducible,
-    # while new runs have one unambiguous source of truth.
-    if args.diff_mode is None:
-        args.diff_mode = 'eaom' if args.use_eaom else 'cfdm'
-    if args.boundary_mode is None:
-        args.boundary_mode = 'edgegate' if args.use_edgegate else 'off'
-
     # Run12: deterministic mode disables cudnn.benchmark for strict reproducibility
     if args.deterministic:
         cudnn.benchmark = False
@@ -540,14 +430,6 @@ def trainValidateSegmentation(args):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(SEED)
 
-    # ---- mutual exclusion checks ----
-    if args.grmsa_mode != 'off' and args.use_sfif:
-        raise ValueError('--grmsa-mode is mutually exclusive with --use-sfif')
-    if args.decoder_mode != 'msa' and args.use_sfif:
-        raise ValueError('--decoder-mode other than msa is mutually exclusive with --use-sfif')
-    if args.decoder_mode != 'msa' and args.grmsa_mode != 'off':
-        raise ValueError('--grmsa-mode applies only with --decoder-mode msa')
-
     # ---- build dataset path ----
     dataset_root = os.path.join(args.data_root, args.dataset)
 
@@ -560,27 +442,12 @@ def trainValidateSegmentation(args):
 
     # ---- model ----
     model = BaseNet(
-        use_eaom=args.use_eaom,
-        use_sfif=args.use_sfif,
-        use_prior=args.use_prior,
-        use_msca=args.use_msca,
-        use_stargate=args.use_stargate,
-        use_edgegate=args.use_edgegate,
-        grmsa_mode=args.grmsa_mode,
-        decoder_mode=args.decoder_mode,
-        head_mode=args.head_mode,
-        scale_fusion_mode=args.scale_fusion,
         diff_mode=args.diff_mode,
         diff_sharing=args.diff_sharing,
         supervision_mode=args.supervision_mode,
-        amp_phase_mode=args.amp_phase_mode,
-        use_lfds=args.use_lfds,
-        use_tct=args.use_tct,
-        encoder_fusion_mode=args.encoder_fusion_mode,
+        decoder_mode=args.decoder_mode,
+        head_mode=args.head_mode,
         boundary_mode=args.boundary_mode,
-        consistency_mode=args.consistency_mode,
-        sdtr_scope=args.sdtr_scope,
-        temporal_relation_mode=args.temporal_relation_mode,
     )
 
     current_protocol_signature = build_protocol_signature(
@@ -588,7 +455,7 @@ def trainValidateSegmentation(args):
     )
 
     print(
-        'Run14 protocol signature prepared '
+        'Run13 E4 protocol signature prepared '
         f'(version={current_protocol_signature["version"]})'
     )
 
@@ -600,17 +467,13 @@ def trainValidateSegmentation(args):
     std = [0.225, 0.224, 0.229, 0.225, 0.224, 0.229]
 
     # Run12: build transform list dynamically
-    # CRITICAL: AmpMix must be BEFORE Normalize (operates on raw [0,255] images)
     train_transforms = [
         myTransforms.Scale(args.inWidth, args.inHeight),
         myTransforms.RandomCropResize(int(7. / 224. * args.inWidth)),
         myTransforms.RandomFlip(),
         myTransforms.RandomExchange(),
+        myTransforms.Normalize(mean=mean, std=std),
     ]
-    if args.amp_mix:
-        train_transforms.append(myTransforms.AmpMix(prob=0.5))
-    # Normalize must be AFTER AmpMix
-    train_transforms.append(myTransforms.Normalize(mean=mean, std=std))
     train_transforms.append(myTransforms.ToTensor(color_order=args.color_order))
 
     trainDataset_main = myTransforms.Compose(train_transforms)
@@ -692,17 +555,6 @@ def trainValidateSegmentation(args):
                     'strict full resume allowed'
                 )
             else:
-                # Run14's explicit temporal-relation API requires a strict
-                # protocol_signature.  Never resume it from an unverifiable
-                # historical full checkpoint.
-                if args.temporal_relation_mode is not None:
-                    raise ValueError(
-                        'Checkpoint has no protocol_signature, but the '
-                        'current run uses the Run14 '
-                        '--temporal-relation-mode API. '
-                        'Refusing unverifiable full resume.'
-                    )
-
                 print(
                     'WARNING: legacy full checkpoint has no '
                     'protocol_signature; falling back to legacy '
@@ -804,40 +656,16 @@ def trainValidateSegmentation(args):
         'weight_decay': args.weight_decay,
         'lr_mode': args.lr_mode,
         'seed': args.seed,
-        'use_eaom': args.use_eaom,
-        'use_sfif': args.use_sfif,
-        'use_prior': args.use_prior,
-        'use_msca': args.use_msca,
-        'use_stargate': args.use_stargate,
-        'use_edgegate': args.use_edgegate,
-        'grmsa_mode': args.grmsa_mode,
         'decoder_mode': args.decoder_mode,
         'head_mode': args.head_mode,
         'ds_profile': args.ds_profile,
-        'scale_fusion': args.scale_fusion,
         'color_order': args.color_order,
         'deterministic': args.deterministic,
-        'amp_mix': args.amp_mix,
         'val_split': args.val_split,
         'diff_mode': args.diff_mode,
         'diff_sharing': args.diff_sharing,
-        'sdtr_scope': args.sdtr_scope,
-        'temporal_relation_mode': args.temporal_relation_mode,
-
-        # Effective normalised Run14 topology.
-        'base_diff_mode': model.base_diff_mode,
-        'temporal_relation_plan': list(model.temporal_relation_plan),
-
         'supervision_mode': args.supervision_mode,
-        'amp_phase_mode': args.amp_phase_mode,
-        'use_lfds': args.use_lfds,
-        'use_tct': args.use_tct,
-        'encoder_fusion_mode': args.encoder_fusion_mode,
         'boundary_mode': args.boundary_mode,
-        'consistency_mode': args.consistency_mode,
-        'lambda_freq': 0.2,
-        'lambda_boundary': 0.2,
-        'lambda_consistency': 0.1,
         'dice_reduction': args.dice_reduction,
 
         # Strict full-resume experiment protocol.
@@ -1020,18 +848,6 @@ def trainValidateSegmentation(args):
     print(test_summary)
     print('=' * 68)
 
-    # ---- log SCRF alpha values if enabled ----
-    if args.scale_fusion == 'scrf':
-        scrf_module = getattr(model.decoder_fusion, 'scrf', None)
-        if scrf_module is not None and hasattr(scrf_module, 'gammas'):
-            alpha_values = []
-            for i, gamma in enumerate(scrf_module.gammas):
-                alpha = 1.0 + torch.tanh(gamma).item()
-                alpha_values.append(f'scale{i}={alpha:.4f}')
-            scrf_summary = '  SCRF Alpha: ' + ', '.join(alpha_values)
-            print(scrf_summary)
-            logger.write('\n' + scrf_summary + '\n')
-
     logger.write('\n' + test_summary + '\n')
     logger.write('\n%-6s\t-\t-\t%-8.4f\t%-8.4f\t%-8.4f\t%-8.4f\t%-8.4f\t%-10.4f\n' %
                  ('Test', score_test['OA'], score_test['IoU'],
@@ -1106,123 +922,56 @@ if __name__ == '__main__':
     parser.add_argument('--logFile', default='trainValLog.txt')
 
     # ---- AEGIS module toggles ----
-    parser.add_argument('--use-eaom', action='store_true',
-                        help='Enable EAOM (Edge-Aware Oracle Module)')
-    parser.add_argument('--use-sfif', action='store_true',
-                        help='Enable SFIF (Spatial-Frequency Interactive Fusion)')
-    parser.add_argument('--use-prior', action='store_true',
-                        help='Enable HFC Prior Injector')
-    parser.add_argument('--use-msca', action='store_true',
-                        help='Enable MSCA module')
-    parser.add_argument('--use-stargate', action='store_true',
-                        help='Enable StarGate module (Star-Operation cross-temporal gating)')
-    parser.add_argument('--use-edgegate', action='store_true',
-                        help='Enable EdgeGate module (Edge-Guided Boundary Refinement)')
     parser.add_argument(
-        '--grmsa-mode', default='off',
-        choices=['off', 'mask', 'residual', 'full'],
-        help='Decoder MSA ablation: off, mask fix, residual fix, or full GR-MSA',
+        '--decoder-mode', default='rep_dw',
+        choices=['msa', 'rep_dw'],
+        help='Decoder implementation (msa or rep_dw).',
     )
     parser.add_argument(
-        '--decoder-mode', default='msa',
-        choices=['msa', 'plain_dw', 'rep_dw', 'rep_dw_shared'],
-        help='Decoder implementation (Run10 uses plain_dw/rep_dw variants)',
-    )
-    parser.add_argument(
-        '--head-mode', default='shared',
+        '--head-mode', default='independent',
         choices=['shared', 'independent'],
-        help='Prediction-head sharing across decoder scales (Run11)',
+        help='Prediction-head sharing across decoder scales.',
     )
     parser.add_argument(
         '--ds-profile', default='legacy',
         choices=['legacy', 'primary', 'main_only'],
-        help='Deep-supervision weight profile (Run11)',
+        help='Deep-supervision weight profile.',
     )
 
     # ---- Run13 explicit architecture/supervision modes ----
     parser.add_argument(
-        '--diff-mode', default=None, choices=['cfdm', 'eaom', 'sdtr'],
-        help='Run13 difference encoder. Omit to preserve legacy --use-eaom/CFDM behavior.',
+        '--diff-mode', default='eaom', choices=['cfdm', 'eaom'],
+        help='Difference encoder (cfdm or eaom).',
     )
     parser.add_argument(
-        '--diff-sharing', default='shared',
+        '--diff-sharing', default='independent',
         choices=['shared', 'independent'],
         help='Share one difference encoder or use four scale-specific instances.',
     )
     parser.add_argument(
-        '--sdtr-scope', default='all',
-        choices=['all', 'shallow', 'deep'],
-        help=(
-            'Legacy Run13 SDTR scope used only with --diff-mode sdtr: '
-            'all, shallow, or deep. '
-            'Run14 should prefer --temporal-relation-mode.'
-        ),
-    )
-    parser.add_argument(
-        '--temporal-relation-mode', default=None,
-        choices=['off', 'shallow_replace', 'deep_replace', 'deep_residual'],
-        help=(
-            'Run14 temporal-relation mode. '
-            'Use with --diff-mode eaom and --diff-sharing independent. '
-            'Omit for historical Run13 compatibility.'
-        ),
-    )
-    parser.add_argument(
-        '--supervision-mode', default='legacy',
+        '--supervision-mode', default='native',
         choices=['legacy', 'native'],
         help='legacy full-resolution DS or native-resolution SCDS.',
     )
     parser.add_argument(
         '--dice-reduction', default='batch_global',
         choices=['batch_global', 'per_image'],
-        help='Soft-Dice reduction. Run13 fixes batch_global for a clean Run12 control.',
+        help='Soft-Dice reduction.',
     )
     parser.add_argument(
-        '--amp-phase-mode', default='off',
-        choices=['off', 'lf_shared'],
-        help='APID-LF feature amplitude/phase mode.',
-    )
-    parser.add_argument(
-        '--use-lfds', action='store_true',
-        help='Enable the training-only local frequency prediction head.',
-    )
-    parser.add_argument(
-        '--use-tct', action='store_true',
-        help='Enable Temporal Change Tokens at 16x16 and 8x8.',
-    )
-    parser.add_argument(
-        '--encoder-fusion-mode', default='hfea',
-        choices=['hfea', 'rephfea_pyr'],
-        help='Legacy HFEA or Run13 RepHFEA-Pyramid.',
-    )
-    parser.add_argument(
-        '--boundary-mode', default=None, choices=['off', 'edgegate', 'bdsr'],
-        help='Run13 boundary refinement. Omit to preserve --use-edgegate/off.',
-    )
-    parser.add_argument(
-        '--consistency-mode', default='off', choices=['off', 'baic'],
-        help='Training-time batch amplitude-invariance consistency.',
+        '--boundary-mode', default='edgegate', choices=['off', 'edgegate'],
+        help='Boundary refinement.',
     )
 
     # ---- Run12 parameters ----
-    parser.add_argument(
-        '--scale-fusion', default='plain',
-        choices=['plain', 'scrf'],
-        help='Scale fusion mode: plain (fixed +) or scrf (learnable calibration)',
-    )
     parser.add_argument(
         '--deterministic', action='store_true',
         help='Enable strict deterministic mode (disable cudnn.benchmark)',
     )
     parser.add_argument(
-        '--color-order', default='legacy',
+        '--color-order', default='fixed',
         choices=['legacy', 'fixed'],
-        help='ToTensor color order: legacy (Run10/11 bug) or fixed (correct T1/T2). '
-             'Default legacy for historical compatibility; Run12 scripts should explicitly use fixed.',
-    )
-    parser.add_argument(
-        '--amp-mix', action='store_true',
-        help='Enable amplitude-invariant augmentation (AmpMix)',
+        help='ToTensor color order: legacy (bug) or fixed (correct T1/T2).',
     )
 
     args = parser.parse_args()

@@ -6,17 +6,9 @@ Full evaluation::
     python models/scripts/test.py --dataset LEVIR-CD-256 \\
         --checkpoint saved_models/baseline/LEVIR-CD-256/best_model.pth
 
-Run14 architecture preflight::
+Architecture preflight::
 
     python models/scripts/test.py --smoke
-
-The smoke matrix covers:
-    R0 E4 anchor
-    R6 shallow-only SDTR
-    R7 deep-replace SDTR
-    R8 deep-residual SDTR
-    R4 MSCA + Prior
-    R5 TCT standalone
 """
 
 import sys
@@ -53,11 +45,7 @@ from models.utils.losses import deep_supervision_loss
 
 
 def resolve_explicit_modes(args):
-    """Map legacy boolean switches onto the explicit Run13 mode fields."""
-    if args.diff_mode is None:
-        args.diff_mode = 'eaom' if args.use_eaom else 'cfdm'
-    if args.boundary_mode is None:
-        args.boundary_mode = 'edgegate' if args.use_edgegate else 'off'
+    """Normalise the explicit Run13 mode fields (defaults already set)."""
 
 
 def cli_option_was_provided(option_name):
@@ -164,17 +152,6 @@ def apply_checkpoint_protocol(args, signature):
     )
     apply_checkpoint_value(
         args, signature,
-        'sdtr_scope', 'sdtr_scope', '--sdtr-scope',
-    )
-    apply_checkpoint_value(
-        args, signature,
-        'temporal_relation_mode',
-        'temporal_relation_mode',
-        '--temporal-relation-mode',
-    )
-
-    apply_checkpoint_value(
-        args, signature,
         'supervision_mode',
         'supervision_mode',
         '--supervision-mode',
@@ -192,35 +169,6 @@ def apply_checkpoint_protocol(args, signature):
 
     apply_checkpoint_value(
         args, signature,
-        'use_prior', 'use_prior', '--use-prior',
-    )
-    apply_checkpoint_value(
-        args, signature,
-        'use_msca', 'use_msca', '--use-msca',
-    )
-    apply_checkpoint_value(
-        args, signature,
-        'use_tct', 'use_tct', '--use-tct',
-    )
-    apply_checkpoint_value(
-        args, signature,
-        'use_lfds', 'use_lfds', '--use-lfds',
-    )
-
-    apply_checkpoint_value(
-        args, signature,
-        'amp_phase_mode',
-        'amp_phase_mode',
-        '--amp-phase-mode',
-    )
-    apply_checkpoint_value(
-        args, signature,
-        'encoder_fusion_mode',
-        'encoder_fusion_mode',
-        '--encoder-fusion-mode',
-    )
-    apply_checkpoint_value(
-        args, signature,
         'decoder_mode',
         'decoder_mode',
         '--decoder-mode',
@@ -233,40 +181,10 @@ def apply_checkpoint_protocol(args, signature):
     )
     apply_checkpoint_value(
         args, signature,
-        'scale_fusion',
-        'scale_fusion',
-        '--scale-fusion',
-    )
-    apply_checkpoint_value(
-        args, signature,
         'boundary_mode',
         'boundary_mode',
         '--boundary-mode',
     )
-    apply_checkpoint_value(
-        args, signature,
-        'consistency_mode',
-        'consistency_mode',
-        '--consistency-mode',
-    )
-
-    apply_checkpoint_value(
-        args, signature,
-        'use_sfif', 'use_sfif', '--use-sfif',
-    )
-    apply_checkpoint_value(
-        args, signature,
-        'use_stargate',
-        'use_stargate',
-        '--use-stargate',
-    )
-    apply_checkpoint_value(
-        args, signature,
-        'grmsa_mode',
-        'grmsa_mode',
-        '--grmsa-mode',
-    )
-
     apply_checkpoint_value(
         args, signature,
         'seed', 'seed', '--seed',
@@ -278,56 +196,11 @@ def apply_checkpoint_protocol(args, signature):
         '--deterministic',
     )
 
-    # Synchronise historical compatibility flags with the restored
-    # explicit configuration.
-    args.use_eaom = (
-        args.diff_mode == 'eaom'
-    )
-    args.use_edgegate = (
-        args.boundary_mode == 'edgegate'
-    )
-    if cli_option_was_provided('--use-eaom'):
-        if signature.get('diff_mode') != 'eaom':
-            raise ValueError(
-                'CLI/checkpoint protocol conflict: '
-                '--use-eaom was supplied but checkpoint '
-                f'diff_mode={signature.get("diff_mode")!r}'
-            )
-
-    if cli_option_was_provided('--use-edgegate'):
-        if signature.get('boundary_mode') != 'edgegate':
-            raise ValueError(
-                'CLI/checkpoint protocol conflict: '
-                '--use-edgegate was supplied but checkpoint '
-                f'boundary_mode={signature.get("boundary_mode")!r}'
-            )    
-
-
 def validate_effective_model_protocol(model, signature):
     """Check the effective model topology after checkpoint restoration."""
     if signature is None:
         return
 
-    if 'base_diff_mode' in signature:
-        if model.base_diff_mode != signature['base_diff_mode']:
-            raise ValueError(
-                'Effective base_diff_mode mismatch: '
-                f'model={model.base_diff_mode!r}, '
-                f'checkpoint={signature["base_diff_mode"]!r}'
-            )
-
-    if 'temporal_relation_plan' in signature:
-        model_plan = list(model.temporal_relation_plan)
-        checkpoint_plan = list(
-            signature['temporal_relation_plan']
-        )
-
-        if model_plan != checkpoint_plan:
-            raise ValueError(
-                'Effective temporal_relation_plan mismatch: '
-                f'model={model_plan!r}, '
-                f'checkpoint={checkpoint_plan!r}'
-            )
 
 
 # =========================================================
@@ -530,286 +403,11 @@ def repdw_block_smoke(device):
             'RepDW runtime deploy equivalence (non-zero branch)',
         )
 
-def _run14_smoke_case(
-    label,
-    device,
-    *,
-    temporal_relation_mode='off',
-    use_msca=False,
-    use_prior=False,
-    use_tct=False,
-):
-    """Run one fixed Run14 architecture smoke case."""
-
-    print('\n' + '-' * 72)
-    print(f'Run14 smoke case: {label}')
-    print('-' * 72)
-
-    model = BaseNet(
-        use_eaom=False,
-        use_sfif=False,
-        use_prior=use_prior,
-        use_msca=use_msca,
-        use_stargate=False,
-        use_edgegate=False,
-
-        grmsa_mode='off',
-        decoder_mode='rep_dw',
-        head_mode='independent',
-        scale_fusion_mode='plain',
-
-        diff_mode='eaom',
-        diff_sharing='independent',
-        sdtr_scope='all',
-        temporal_relation_mode=temporal_relation_mode,
-
-        supervision_mode='native',
-        amp_phase_mode='off',
-        use_lfds=False,
-        use_tct=use_tct,
-        encoder_fusion_mode='hfea',
-        boundary_mode='edgegate',
-        consistency_mode='off',
-    )
-
-    model = model.to(device)
-    model.eval()
-
-    expected_plan_by_mode = {
-        'off': (
-            'off',
-            'off',
-            'off',
-            'off',
-        ),
-        'shallow_replace': (
-            'shallow_replace',
-            'shallow_replace',
-            'off',
-            'off',
-        ),
-        'deep_replace': (
-            'off',
-            'off',
-            'deep_replace',
-            'deep_replace',
-        ),
-        'deep_residual': (
-            'off',
-            'off',
-            'deep_residual',
-            'deep_residual',
-        ),
-    }
-
-    expected_plan = expected_plan_by_mode[
-        temporal_relation_mode
-    ]
-
-    actual_plan = tuple(
-        model.temporal_relation_plan
-    )
-
-    if actual_plan != expected_plan:
-        raise RuntimeError(
-            f'{label}: temporal relation plan mismatch: '
-            f'got {actual_plan!r}, '
-            f'expected {expected_plan!r}'
-        )
-
-    if model.base_diff_mode != 'eaom':
-        raise RuntimeError(
-            f'{label}: base_diff_mode='
-            f'{model.base_diff_mode!r}, expected "eaom"'
-        )
-
-    if bool(model.use_msca) != bool(use_msca):
-        raise RuntimeError(
-            f'{label}: MSCA construction mismatch'
-        )
-
-    if bool(model.use_prior) != bool(use_prior):
-        raise RuntimeError(
-            f'{label}: Prior construction mismatch'
-        )
-
-    if bool(model.use_tct) != bool(use_tct):
-        raise RuntimeError(
-            f'{label}: TCT construction mismatch'
-        )
-
-    if not model.use_edgegate:
-        raise RuntimeError(
-            f'{label}: E4-style EdgeGate is not enabled'
-        )
-
-    if model.decoder_mode != 'rep_dw':
-        raise RuntimeError(
-            f'{label}: decoder_mode='
-            f'{model.decoder_mode!r}, expected "rep_dw"'
-        )
-
-    if model.head_mode != 'independent':
-        raise RuntimeError(
-            f'{label}: head_mode='
-            f'{model.head_mode!r}, expected "independent"'
-        )
-
-    if model.supervision_mode != 'native':
-        raise RuntimeError(
-            f'{label}: supervision_mode='
-            f'{model.supervision_mode!r}, expected "native"'
-        )
-
-    a = torch.randn(
-        1,
-        3,
-        256,
-        256,
-        device=device,
-    )
-
-    b = torch.randn(
-        1,
-        3,
-        256,
-        256,
-        device=device,
-    )
-
-    with torch.no_grad():
-        outputs = model(
-            a,
-            b,
-        )
-
-    expected_shapes = (
-        (1, 1, 256, 256),
-        (1, 1, 32, 32),
-        (1, 1, 16, 16),
-        (1, 1, 8, 8),
-    )
-
-    if len(outputs) != 4:
-        raise RuntimeError(
-            f'{label}: expected 4 outputs, '
-            f'got {len(outputs)}'
-        )
-
-    for index, (output, expected_shape) in enumerate(
-        zip(outputs, expected_shapes),
-        start=1,
-    ):
-        if tuple(output.shape) != expected_shape:
-            raise RuntimeError(
-                f'{label}: output{index} shape mismatch: '
-                f'got {tuple(output.shape)}, '
-                f'expected {expected_shape}'
-            )
-
-        if not torch.isfinite(output).all():
-            raise RuntimeError(
-                f'{label}: output{index} contains '
-                'NaN or Inf'
-            )
-
-    params = sum(
-        np.prod(parameter.size())
-        for parameter in model.parameters()
-    )
-
-    print(
-        f'  Params       : {params / 1e6:.4f} M'
-    )
-    print(
-        f'  Base diff    : {model.base_diff_mode}'
-    )
-    print(
-        f'  Relation plan: {list(actual_plan)}'
-    )
-    print(
-        f'  MSCA/Prior/TCT: '
-        f'{use_msca}/{use_prior}/{use_tct}'
-    )
-    print(
-        f'  Output shapes: '
-        f'{[tuple(output.shape) for output in outputs]}'
-    )
-    print(f'  {label}: PASSED')
-
-    del outputs
-    del a
-    del b
-    del model
-
-    if device.type == 'cuda':
-        torch.cuda.empty_cache()
-
-def run14_smoke_matrix(device):
-    """Exercise every architecture combination required by Run14."""
-
-    cases = (
-        {
-            'label': 'R0_E4_Repro',
-            'temporal_relation_mode': 'off',
-            'use_msca': False,
-            'use_prior': False,
-            'use_tct': False,
-        },
-        {
-            'label': 'R6_SDTR_ShallowOnly',
-            'temporal_relation_mode': 'shallow_replace',
-            'use_msca': False,
-            'use_prior': False,
-            'use_tct': False,
-        },
-        {
-            'label': 'R7_SDTR_DeepReplace',
-            'temporal_relation_mode': 'deep_replace',
-            'use_msca': False,
-            'use_prior': False,
-            'use_tct': False,
-        },
-        {
-            'label': 'R8_SDTR_DeepResidual',
-            'temporal_relation_mode': 'deep_residual',
-            'use_msca': False,
-            'use_prior': False,
-            'use_tct': False,
-        },
-        {
-            'label': 'R4_MSCA_Prior',
-            'temporal_relation_mode': 'off',
-            'use_msca': True,
-            'use_prior': True,
-            'use_tct': False,
-        },
-        {
-            'label': 'R5_TCT_Standalone',
-            'temporal_relation_mode': 'off',
-            'use_msca': False,
-            'use_prior': False,
-            'use_tct': True,
-        },
-    )
-
-    print('\n=== Run14 Architecture Smoke Matrix ===')
-
-    for case in cases:
-        _run14_smoke_case(
-            device=device,
-            **case,
-        )
-
-    print(
-        '\n=== Run14 Architecture Smoke Matrix PASSED: '
-        f'{len(cases)}/{len(cases)} ==='
-    )
 
 def smoke_test(args):
-    """Run the Run14 preflight smoke matrix."""
+    """Run the architecture preflight smoke test."""
 
-    print('=== AEGIS-CD Run14 Smoke Test ===')
+    print('=== AEGIS-CD Smoke Test ===')
 
     print(f'PyTorch: {torch.__version__}')
     print(
@@ -847,11 +445,6 @@ def smoke_test(args):
 
     # Existing RepDW algebra/runtime preflight.
     repdw_block_smoke(
-        device
-    )
-
-    # Run14 fixed architecture matrix.
-    run14_smoke_matrix(
         device
     )
 
@@ -900,7 +493,7 @@ def smoke_test(args):
             )
 
     print(
-        '\n=== AEGIS-CD Run14 Smoke Test PASSED ==='
+        '\n=== AEGIS-CD Smoke Test PASSED ==='
     )
 
 
@@ -947,14 +540,8 @@ def ValidateSegmentation(args):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    if args.grmsa_mode != 'off' and args.use_sfif:
-        raise ValueError('--grmsa-mode is mutually exclusive with --use-sfif')
-    if args.decoder_mode != 'msa' and args.use_sfif:
-        raise ValueError('--decoder-mode other than msa is mutually exclusive with --use-sfif')
-    if args.decoder_mode != 'msa' and args.grmsa_mode != 'off':
-        raise ValueError('--grmsa-mode applies only with --decoder-mode msa')
-    if args.deploy_reparam and args.decoder_mode not in ('rep_dw', 'rep_dw_shared'):
-        raise ValueError('--deploy-reparam requires rep_dw or rep_dw_shared')
+    if args.deploy_reparam and args.decoder_mode != 'rep_dw':
+        raise ValueError('--deploy-reparam requires rep_dw')
 
     # ---- build dataset root ----
     dataset_root = os.path.join(args.data_root, args.dataset)
@@ -973,27 +560,12 @@ def ValidateSegmentation(args):
 
     # ---- model ----
     model = BaseNet(
-        use_eaom=args.use_eaom,
-        use_sfif=args.use_sfif,
-        use_prior=args.use_prior,
-        use_msca=args.use_msca,
-        use_stargate=args.use_stargate,
-        use_edgegate=args.use_edgegate,
-        grmsa_mode=args.grmsa_mode,
-        decoder_mode=args.decoder_mode,
-        head_mode=args.head_mode,
-        scale_fusion_mode=args.scale_fusion,
         diff_mode=args.diff_mode,
         diff_sharing=args.diff_sharing,
         supervision_mode=args.supervision_mode,
-        amp_phase_mode=args.amp_phase_mode,
-        use_lfds=args.use_lfds,
-        use_tct=args.use_tct,
-        encoder_fusion_mode=args.encoder_fusion_mode,
+        decoder_mode=args.decoder_mode,
+        head_mode=args.head_mode,
         boundary_mode=args.boundary_mode,
-        consistency_mode=args.consistency_mode,
-        sdtr_scope=args.sdtr_scope,
-        temporal_relation_mode=args.temporal_relation_mode,
     )
 
     validate_effective_model_protocol(
@@ -1011,16 +583,6 @@ def ValidateSegmentation(args):
     print(
         f'Total network parameters: '
         f'{total_params / 1e6:.2f} M'
-    )
-
-    print(
-        f'Effective base diff: '
-        f'{model.base_diff_mode}'
-    )
-
-    print(
-        f'Effective temporal relation plan: '
-        f'{list(model.temporal_relation_plan)}'
     )
 
     print(
@@ -1109,30 +671,13 @@ if __name__ == '__main__':
     # ---- model ----
     parser.add_argument('--checkpoint', default=None,
                         help='Path to model checkpoint (.pth)')
-    parser.add_argument('--use-eaom', action='store_true',
-                        help='Use EAOM instead of CFDM (must match checkpoint)')
-    parser.add_argument('--use-sfif', action='store_true',
-                        help='Use SFIF instead of MSA (must match checkpoint)')
-    parser.add_argument('--use-prior', action='store_true',
-                        help='Use HFC Prior Injector (must match checkpoint)')
-    parser.add_argument('--use-msca', action='store_true',
-                        help='Use MSCA module (must match checkpoint)')
-    parser.add_argument('--use-stargate', action='store_true',
-                        help='Use StarGate module (must match checkpoint)')
-    parser.add_argument('--use-edgegate', action='store_true',
-                        help='Use EdgeGate module (must match checkpoint)')
     parser.add_argument(
-        '--grmsa-mode', default='off',
-        choices=['off', 'mask', 'residual', 'full'],
-        help='Decoder MSA mode; must match the checkpoint',
-    )
-    parser.add_argument(
-        '--decoder-mode', default='msa',
-        choices=['msa', 'plain_dw', 'rep_dw', 'rep_dw_shared'],
+        '--decoder-mode', default='rep_dw',
+        choices=['msa', 'rep_dw'],
         help='Decoder implementation; must match the checkpoint',
     )
     parser.add_argument(
-        '--head-mode', default='shared',
+        '--head-mode', default='independent',
         choices=['shared', 'independent'],
         help='Prediction-head mode; must match the checkpoint',
     )
@@ -1142,37 +687,16 @@ if __name__ == '__main__':
         help='Deep-supervision profile used for loss reporting',
     )
     parser.add_argument(
-        '--diff-mode', default=None, choices=['cfdm', 'eaom', 'sdtr'],
-        help='Run13 difference encoder; omit for legacy --use-eaom/CFDM.',
+        '--diff-mode', default='eaom', choices=['cfdm', 'eaom'],
+        help='Difference encoder; must match the checkpoint.',
     )
     parser.add_argument(
-        '--diff-sharing', default='shared',
+        '--diff-sharing', default='independent',
         choices=['shared', 'independent'],
         help='Difference-encoder sharing; must match the checkpoint.',
     )
     parser.add_argument(
-        '--sdtr-scope', default='all',
-        choices=['all', 'shallow', 'deep'],
-        help=(
-            'Legacy Run13 SDTR scope. '
-            'Metadata-aware Run14 checkpoints restore this automatically.'
-        ),
-    )
-    parser.add_argument(
-        '--temporal-relation-mode', default=None,
-        choices=[
-            'off',
-            'shallow_replace',
-            'deep_replace',
-            'deep_residual',
-        ],
-        help=(
-            'Run14 temporal-relation mode. '
-            'Metadata-aware checkpoints restore this automatically.'
-        ),
-    )
-    parser.add_argument(
-        '--supervision-mode', default='legacy',
+        '--supervision-mode', default='native',
         choices=['legacy', 'native'],
         help='legacy full-resolution DS or native SCDS outputs.',
     )
@@ -1182,26 +706,8 @@ if __name__ == '__main__':
         help='Soft-Dice reduction used for loss reporting.',
     )
     parser.add_argument(
-        '--amp-phase-mode', default='off',
-        choices=['off', 'lf_shared'],
-        help='APID-LF mode; must match the checkpoint.',
-    )
-    parser.add_argument('--use-lfds', action='store_true',
-                        help='Instantiate the LFDS training head for checkpoint compatibility.')
-    parser.add_argument('--use-tct', action='store_true',
-                        help='Enable TCT; must match the checkpoint.')
-    parser.add_argument(
-        '--encoder-fusion-mode', default='hfea',
-        choices=['hfea', 'rephfea_pyr'],
-        help='Encoder fusion mode; must match the checkpoint.',
-    )
-    parser.add_argument(
-        '--boundary-mode', default=None, choices=['off', 'edgegate', 'bdsr'],
-        help='Boundary mode; omit for legacy --use-edgegate/off.',
-    )
-    parser.add_argument(
-        '--consistency-mode', default='off', choices=['off', 'baic'],
-        help='Training-only consistency mode recorded for configuration parity.',
+        '--boundary-mode', default='edgegate', choices=['off', 'edgegate'],
+        help='Boundary mode; must match the checkpoint.',
     )
     parser.add_argument(
         '--deploy-reparam', action='store_true',
@@ -1210,16 +716,11 @@ if __name__ == '__main__':
 
     # ---- Run12 parameters ----
     parser.add_argument(
-        '--scale-fusion', default='plain',
-        choices=['plain', 'scrf'],
-        help='Scale fusion mode: plain (fixed +) or scrf (learnable calibration)',
-    )
-    parser.add_argument(
         '--deterministic', action='store_true',
         help='Enable strict deterministic mode (disable cudnn.benchmark)',
     )
     parser.add_argument(
-        '--color-order', default='legacy',
+        '--color-order', default='fixed',
         choices=['legacy', 'fixed'],
         help=(
             'ToTensor color order. '
@@ -1256,9 +757,7 @@ if __name__ == '__main__':
         '--smoke',
         action='store_true',
         help=(
-            'Run Run14 preflight matrix: E4 anchor, shallow-only, '
-            'deep-replace, deep-residual, MSCA+Prior, and '
-            'TCT standalone.'
+            'Run the architecture preflight smoke test.'
         ),
     )
 

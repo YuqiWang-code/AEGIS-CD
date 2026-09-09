@@ -121,32 +121,12 @@ def deep_supervision_loss(outputs, targets, profile,
     return loss
 
 
-def boundary_target(targets, output_size, kernel_size=3):
-    """Create ``dilate(Y) - erode(Y)`` and area-pool it to output_size."""
-    if kernel_size % 2 != 1 or kernel_size < 3:
-        raise ValueError('kernel_size must be an odd integer >= 3')
-    targets = targets.float()
-    padding = kernel_size // 2
-    dilated = F.max_pool2d(
-        targets, kernel_size, stride=1, padding=padding
-    )
-    eroded = 1.0 - F.max_pool2d(
-        1.0 - targets, kernel_size, stride=1, padding=padding
-    )
-    boundary = (dilated - eroded).clamp_(0.0, 1.0)
-    return F.adaptive_avg_pool2d(boundary, output_size)
-
-
 def run13_supervised_loss(outputs, targets, profile='legacy',
-                          supervision_mode='legacy', aux=None,
-                          lambda_freq=0.2, lambda_boundary=0.2,
+                          supervision_mode='legacy',
                           dice_reduction='batch_global'):
-    """SCDS plus the optional LFDS and supervised BDSR losses.
+    """SCDS deep-supervision loss.
 
-    Returns ``(total, components)`` so training logs can audit every fixed
-    Run13 coefficient without duplicating the loss definitions in scripts.
-    BAIC consistency is intentionally added by the training loop because it
-    requires a second augmented forward pass.
+    Returns ``(total, components)`` so training logs can audit the loss.
     """
     components = {
         'scds': deep_supervision_loss(
@@ -154,26 +134,4 @@ def run13_supervised_loss(outputs, targets, profile='legacy',
         )
     }
     total = components['scds']
-    aux = aux or {}
-
-    if 'frequency' in aux:
-        prediction = aux['frequency']
-        freq_target = F.adaptive_avg_pool2d(
-            targets.to(dtype=prediction.dtype), prediction.shape[-2:]
-        )
-        components['frequency'] = BCEDiceLoss(
-            prediction, freq_target, dice_reduction=dice_reduction
-        )
-        total = total + lambda_freq * components['frequency']
-
-    if 'boundary' in aux:
-        prediction = aux['boundary']
-        target_b = boundary_target(targets, prediction.shape[-2:]).to(
-            dtype=prediction.dtype
-        )
-        components['boundary'] = BCEDiceLoss(
-            prediction, target_b, dice_reduction=dice_reduction
-        )
-        total = total + lambda_boundary * components['boundary']
-
     return total, components

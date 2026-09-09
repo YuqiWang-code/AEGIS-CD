@@ -1,8 +1,7 @@
-"""AEGIS-CD multi-phase change detector, including the Run13 architecture.
+"""AEGIS-CD change detector (Run13 E4 architecture).
 
-Historical switches remain checkpoint-compatible.  Run13 adds explicit modes
-for scale-specific temporal relation, native deep supervision, APID-LF,
-LFDS/TCT, RepHFEA-Pyramid, BDSR, and BAIC training consistency.
+Siamese MobileNetV2 + HFEA + EAOM/CFDM difference + RepDW decoder + EdgeGate,
+with scale-decoupled independent heads and native (SCDS) deep supervision.
 """
 
 import copy
@@ -367,134 +366,42 @@ class SC_Attention(nn.Module):
 
 # -------------------------------------------------------MFFM----------------------------------------------------------#
 class DecoderFusion(nn.Module):
-    """Top-down multi-scale decoder with legacy and Phase 11 modes."""
+    """Top-down multi-scale decoder (MSA or RepDW)."""
 
-    VALID_DECODER_MODES = ('msa', 'plain_dw', 'rep_dw', 'rep_dw_shared')
+    VALID_DECODER_MODES = ('msa', 'rep_dw')
 
-    def __init__(self, channels, use_sfif=False, grmsa_mode='off',
-                 decoder_mode='msa', scale_fusion_mode='plain'):
+    def __init__(self, channels, decoder_mode='rep_dw'):
         super(DecoderFusion, self).__init__()
         if decoder_mode not in self.VALID_DECODER_MODES:
             raise ValueError(
                 f'Unknown decoder_mode={decoder_mode!r}; '
                 f'expected one of {self.VALID_DECODER_MODES}'
             )
-        if grmsa_mode not in MSA_Module.VALID_MODES:
-            raise ValueError(
-                f'Unknown grmsa_mode={grmsa_mode!r}; '
-                f'expected one of {MSA_Module.VALID_MODES}'
-            )
-        if use_sfif and grmsa_mode != 'off':
-            raise ValueError('SFIF and GR-MSA are alternative DecoderFusion implementations')
-        if use_sfif and decoder_mode != 'msa':
-            raise ValueError('SFIF and --decoder-mode are alternative decoder implementations')
-        if decoder_mode != 'msa' and grmsa_mode != 'off':
-            raise ValueError('GR-MSA modes apply only when decoder_mode="msa"')
 
-        # Run12: SCRF currently only applies to rep_dw (fail-fast for invalid combinations)
-        if scale_fusion_mode == 'scrf' and decoder_mode != 'rep_dw':
-            raise ValueError(
-                f'SCRF (scale_fusion_mode="scrf") only applies to decoder_mode="rep_dw"; '
-                f'got decoder_mode={decoder_mode!r}. '
-                f'Use scale_fusion_mode="plain" for other decoder modes.'
-            )
-
-        self.use_sfif = use_sfif
-        self.grmsa_mode = grmsa_mode
         self.decoder_mode = decoder_mode
-        self.scale_fusion_mode = scale_fusion_mode
 
-        # Run12: Scale-Calibrated Residual Fusion (SCRF)
-        from models.scale_fusion import get_scale_fusion
-        self.scrf = get_scale_fusion(scale_fusion_mode)  # None if 'plain', SCRF instance if 'scrf'
-
-        if use_sfif:
-            from models.sfif import SFIF
-            self.sfif4 = SFIF(channels)
-            self.sfif3 = SFIF(channels)
-            self.sfif2 = SFIF(channels)
-            self.sfif1 = SFIF(channels)
-        elif decoder_mode == 'plain_dw':
-            from models.rep_decoder import PlainDWBlock
-            self.plain4 = PlainDWBlock(channels)
-            self.plain3 = PlainDWBlock(channels)
-            self.plain2 = PlainDWBlock(channels)
-            self.plain1 = PlainDWBlock(channels)
-        elif decoder_mode == 'rep_dw':
+        if decoder_mode == 'rep_dw':
             from models.rep_decoder import RepDWBlock
             self.rep4 = RepDWBlock(channels)
             self.rep3 = RepDWBlock(channels)
             self.rep2 = RepDWBlock(channels)
             self.rep1 = RepDWBlock(channels)
-        elif decoder_mode == 'rep_dw_shared':
-            from models.rep_decoder import RepDWBlock
-            self.rep_shared = RepDWBlock(channels)
         else:
-            # One shared MSA instance is intentionally retained across all four
-            # decoder scales for Run9/checkpoint compatibility.
-            self.module = MSA_Module(channels, grmsa_mode=grmsa_mode)
+            # One shared MSA instance across all four decoder scales.
+            self.module = MSA_Module(channels)
 
     def forward(self, f1, f2, f3, f4):
-        if self.use_sfif:
-            f4 = self.sfif4(f4)
-            f4_up = F.interpolate(f4, scale_factor=(2, 2), mode='bilinear')
-
-            f3 = f3 + f4_up
-            f3 = self.sfif3(f3)
-            f3_up = F.interpolate(f3, scale_factor=(2, 2), mode='bilinear')
-
-            f2 = f2 + f3_up
-            f2 = self.sfif2(f2)
-            f2_up = F.interpolate(f2, scale_factor=(2, 2), mode='bilinear')
-
-            f1 = f1 + f2_up
-            f1 = self.sfif1(f1)
-            return f1, f2, f3, f4
-        elif self.decoder_mode == 'plain_dw':
-            f4 = self.plain4(f4)
-            f4_up = F.interpolate(f4, scale_factor=(2, 2), mode='bilinear')
-
-            f3 = self.plain3(f3 + f4_up)
-            f3_up = F.interpolate(f3, scale_factor=(2, 2), mode='bilinear')
-
-            f2 = self.plain2(f2 + f3_up)
-            f2_up = F.interpolate(f2, scale_factor=(2, 2), mode='bilinear')
-
-            f1 = self.plain1(f1 + f2_up)
-            return f1, f2, f3, f4
-        elif self.decoder_mode == 'rep_dw':
+        if self.decoder_mode == 'rep_dw':
             f4 = self.rep4(f4)
             f4_up = F.interpolate(f4, scale_factor=(2, 2), mode='bilinear')
 
-            # Run12: SCRF replaces fixed `+` with learnable scalar modulation
-            if self.scrf is not None:
-                f3 = self.rep3(self.scrf(f3, f4_up, scale_idx=0))
-            else:
-                f3 = self.rep3(f3 + f4_up)
+            f3 = self.rep3(f3 + f4_up)
             f3_up = F.interpolate(f3, scale_factor=(2, 2), mode='bilinear')
 
-            if self.scrf is not None:
-                f2 = self.rep2(self.scrf(f2, f3_up, scale_idx=1))
-            else:
-                f2 = self.rep2(f2 + f3_up)
+            f2 = self.rep2(f2 + f3_up)
             f2_up = F.interpolate(f2, scale_factor=(2, 2), mode='bilinear')
 
-            if self.scrf is not None:
-                f1 = self.rep1(self.scrf(f1, f2_up, scale_idx=2))
-            else:
-                f1 = self.rep1(f1 + f2_up)
-            return f1, f2, f3, f4
-        elif self.decoder_mode == 'rep_dw_shared':
-            f4 = self.rep_shared(f4)
-            f4_up = F.interpolate(f4, scale_factor=(2, 2), mode='bilinear')
-
-            f3 = self.rep_shared(f3 + f4_up)
-            f3_up = F.interpolate(f3, scale_factor=(2, 2), mode='bilinear')
-
-            f2 = self.rep_shared(f2 + f3_up)
-            f2_up = F.interpolate(f2, scale_factor=(2, 2), mode='bilinear')
-
-            f1 = self.rep_shared(f1 + f2_up)
+            f1 = self.rep1(f1 + f2_up)
             return f1, f2, f3, f4
         else:
             f4 = self.module(f4)
@@ -615,31 +522,10 @@ class MSA_Head(nn.Module):
 
 
 class MSA_Module(nn.Module):
-    """Shared decoder MSA with the orthogonal Run9 ablation modes.
+    """Shared decoder MSA (foreground/background attention)."""
 
-    Modes form a 2x2 factorial design:
-      off      : detached mask + legacy multiplicative output
-      mask     : trainable mask + legacy multiplicative output
-      residual : detached mask + additive identity output
-      full     : trainable mask + additive identity output (GR-MSA)
-
-    The residual path is precisely ``skip + scale * out(fuse([xb, xf]))``.
-    ``scale`` is registered only for residual/full, so mask-only adds no
-    parameters and residual/full add one shared scalar.
-    """
-
-    VALID_MODES = ('off', 'mask', 'residual', 'full')
-
-    def __init__(self, channels=64, grmsa_mode='off'):
+    def __init__(self, channels=64):
         super(MSA_Module, self).__init__()
-        if grmsa_mode not in self.VALID_MODES:
-            raise ValueError(
-                f'Unknown grmsa_mode={grmsa_mode!r}; expected one of {self.VALID_MODES}'
-            )
-
-        self.grmsa_mode = grmsa_mode
-        self.train_mask = grmsa_mode in ('mask', 'full')
-        self.use_residual = grmsa_mode in ('residual', 'full')
         self.conv = nn.Conv2d(channels, 1, kernel_size=1)
         self.background = MSA_Head(channels)
         self.foreground = MSA_Head(channels)
@@ -650,25 +536,17 @@ class MSA_Module(nn.Module):
             nn.BatchNorm2d(channels),
             nn.ReLU(inplace=True)
         )
-        if self.use_residual:
-            self.scale = nn.Parameter(torch.zeros(1))
 
     def forward(self, x):
         skip = x
         mask = self.conv(x)
-        if not self.train_mask:
-            # Legacy control: the projection is frozen, while its input still
-            # changes as upstream layers learn; the resulting mask is not a
-            # fixed image.
-            mask = mask.detach()
+        # Legacy control: the projection is frozen, while its input still
+        # changes as upstream layers learn.
+        mask = mask.detach()
         mask = torch.sigmoid(mask)
         xf = self.foreground(x, mask)      # Foreground
         xb = self.background(x, 1 - mask)  # Background
         x_fused = self.fuse(torch.cat([xb, xf], dim=1))
-
-        if self.use_residual:
-            delta = self.out(x_fused)
-            return skip + self.scale * delta
 
         return self.out(skip * x_fused)
 
@@ -676,493 +554,84 @@ class MSA_Module(nn.Module):
 # ----------------------------------------------------AEGIS-CD--------------------------------------------------------#
 class BaseNet(nn.Module):
     VALID_HEAD_MODES = ('shared', 'independent')
-    VALID_DIFF_MODES = ('cfdm', 'eaom', 'sdtr')
+    VALID_DIFF_MODES = ('cfdm', 'eaom')
     VALID_DIFF_SHARING = ('shared', 'independent')
-    VALID_SDTR_SCOPES = ('all', 'shallow', 'deep')
-
-    # Run14 preferred configuration axis:
-    # the base difference operator and temporal-relation mechanism are
-    # configured separately.
-    VALID_TEMPORAL_RELATION_MODES = (
-        'off',
-        'shallow_replace',
-        'deep_replace',
-        'deep_residual',
-    )
-
     VALID_SUPERVISION_MODES = ('legacy', 'native')
-    VALID_AMP_PHASE_MODES = ('off', 'lf_shared')
-    VALID_ENCODER_FUSION_MODES = ('hfea', 'rephfea_pyr')
-    VALID_BOUNDARY_MODES = ('off', 'edgegate', 'bdsr')
-    VALID_CONSISTENCY_MODES = ('off', 'baic')
+    VALID_BOUNDARY_MODES = ('off', 'edgegate')
 
-    def __init__(self, use_eaom=False, use_sfif=False, use_prior=False,
-                 use_msca=False, use_stargate=False, use_edgegate=False,
-                 grmsa_mode='off', decoder_mode='msa',
-                 head_mode='shared', scale_fusion_mode='plain',
-                 diff_mode=None, diff_sharing='shared',
-                 supervision_mode='legacy', amp_phase_mode='off',
-                 use_lfds=False, use_tct=False,
-                 encoder_fusion_mode='hfea', boundary_mode=None,
-                 consistency_mode='off',
-                 sdtr_scope='all',
-                 temporal_relation_mode=None):
+    def __init__(self, diff_mode='eaom', diff_sharing='independent',
+                 supervision_mode='native', decoder_mode='rep_dw',
+                 head_mode='independent', boundary_mode='edgegate'):
         super(BaseNet, self).__init__()
         if decoder_mode not in DecoderFusion.VALID_DECODER_MODES:
             raise ValueError(
                 f'Unknown decoder_mode={decoder_mode!r}; '
                 f'expected one of {DecoderFusion.VALID_DECODER_MODES}'
             )
-        if grmsa_mode not in MSA_Module.VALID_MODES:
-            raise ValueError(
-                f'Unknown grmsa_mode={grmsa_mode!r}; '
-                f'expected one of {MSA_Module.VALID_MODES}'
-            )
         if head_mode not in self.VALID_HEAD_MODES:
             raise ValueError(
                 f'Unknown head_mode={head_mode!r}; '
                 f'expected one of {self.VALID_HEAD_MODES}'
             )
-        if diff_mode is None:
-            # Historical API compatibility: --use-eaom selected EAOM and the
-            # absence of the flag selected CFDM before Run13 introduced an
-            # explicit difference mode.
-            diff_mode = 'eaom' if use_eaom else 'cfdm'
-        elif diff_mode not in self.VALID_DIFF_MODES:
+        if diff_mode not in self.VALID_DIFF_MODES:
             raise ValueError(
                 f'Unknown diff_mode={diff_mode!r}; '
                 f'expected one of {self.VALID_DIFF_MODES}'
             )
-        if use_eaom and diff_mode != 'eaom':
-            raise ValueError('--use-eaom conflicts with diff_mode != "eaom"')
         if diff_sharing not in self.VALID_DIFF_SHARING:
             raise ValueError(
                 f'Unknown diff_sharing={diff_sharing!r}; '
                 f'expected one of {self.VALID_DIFF_SHARING}'
             )
-        if sdtr_scope not in self.VALID_SDTR_SCOPES:
-            raise ValueError(
-                f'Unknown sdtr_scope={sdtr_scope!r}; '
-                f'expected one of {self.VALID_SDTR_SCOPES}'
-            )
-
-        if (
-            temporal_relation_mode is not None
-            and temporal_relation_mode not in self.VALID_TEMPORAL_RELATION_MODES
-        ):
-            raise ValueError(
-                f'Unknown temporal_relation_mode={temporal_relation_mode!r}; '
-                f'expected one of {self.VALID_TEMPORAL_RELATION_MODES}'
-            )
-
-        # ------------------------------------------------------------------
-        # Difference / temporal-relation configuration normalisation
-        # ------------------------------------------------------------------
-        #
-        # Legacy API:
-        #     diff_mode='sdtr', sdtr_scope=...
-        #
-        # Preferred Run14 API:
-        #     diff_mode='eaom'
-        #     temporal_relation_mode={
-        #         off,
-        #         shallow_replace,
-        #         deep_replace,
-        #         deep_residual,
-        #     }
-        #
-        # Never allow both APIs to control temporal relation simultaneously.
-        legacy_sdtr_request = (
-            diff_mode == 'sdtr'
-            and temporal_relation_mode is None
-        )
-
-        if temporal_relation_mode is not None:
-            if diff_mode == 'sdtr':
-                raise ValueError(
-                    'Do not combine legacy diff_mode="sdtr" with '
-                    'temporal_relation_mode. '
-                    'Use diff_mode="eaom" with temporal_relation_mode '
-                    'for the Run14 API.'
-                )
-
-            if sdtr_scope != 'all':
-                raise ValueError(
-                    'sdtr_scope is a legacy diff_mode="sdtr" option and '
-                    'must remain "all" when temporal_relation_mode is used.'
-                )
-
-            if (
-                temporal_relation_mode != 'off'
-                and diff_mode != 'eaom'
-            ):
-                raise ValueError(
-                    'Temporal relation currently requires '
-                    'diff_mode="eaom" as its base difference operator.'
-                )
-
-            if (
-                temporal_relation_mode != 'off'
-                and diff_sharing != 'independent'
-            ):
-                raise ValueError(
-                    'Temporal relation modes require '
-                    'diff_sharing="independent".'
-                )
-
-        else:
-            # Historical Run13 validation.
-            if (
-                diff_mode == 'sdtr'
-                and sdtr_scope != 'all'
-                and diff_sharing != 'independent'
-            ):
-                raise ValueError(
-                    'sdtr_scope="shallow" or "deep" requires '
-                    'diff_sharing="independent"'
-                )
-
-            if diff_mode != 'sdtr' and sdtr_scope != 'all':
-                raise ValueError(
-                    'sdtr_scope only applies when diff_mode="sdtr"; '
-                    f'got diff_mode={diff_mode!r}, '
-                    f'sdtr_scope={sdtr_scope!r}'
-                )
-        # ------------------------------------------------------------------
-        # Normalised base difference operator
-        # ------------------------------------------------------------------
-        #
-        # Historical diff_mode='sdtr' replaced EAOM entirely.  For Run14
-        # configuration semantics, however, SDTR is treated as a temporal
-        # relation mechanism on top of an EAOM base.
-        if legacy_sdtr_request:
-            base_diff_mode = 'eaom'
-        else:
-            base_diff_mode = diff_mode
-        # ------------------------------------------------------------------
-        # Per-scale temporal-relation execution plan
-        #
-        # scale 0 = 64x64
-        # scale 1 = 32x32
-        # scale 2 = 16x16
-        # scale 3 =  8x8
-        # ------------------------------------------------------------------
-        if legacy_sdtr_request:
-            if sdtr_scope == 'all':
-                temporal_relation_plan = (
-                    'shallow_replace',
-                    'shallow_replace',
-                    'deep_replace',
-                    'deep_replace',
-                )
-            elif sdtr_scope == 'shallow':
-                temporal_relation_plan = (
-                    'shallow_replace',
-                    'shallow_replace',
-                    'off',
-                    'off',
-                )
-            else:  # sdtr_scope == 'deep'
-                temporal_relation_plan = (
-                    'off',
-                    'off',
-                    'deep_replace',
-                    'deep_replace',
-                )
-
-        elif temporal_relation_mode == 'shallow_replace':
-            temporal_relation_plan = (
-                'shallow_replace',
-                'shallow_replace',
-                'off',
-                'off',
-            )
-
-        elif temporal_relation_mode == 'deep_replace':
-            temporal_relation_plan = (
-                'off',
-                'off',
-                'deep_replace',
-                'deep_replace',
-            )
-
-        elif temporal_relation_mode == 'deep_residual':
-            temporal_relation_plan = (
-                'off',
-                'off',
-                'deep_residual',
-                'deep_residual',
-            )
-
-        else:
-            # Includes:
-            #   temporal_relation_mode='off'
-            #   temporal_relation_mode=None with EAOM/CFDM legacy configuration
-            temporal_relation_plan = (
-                'off',
-                'off',
-                'off',
-                'off',
-            )
-        # Historical shared SDTR used one auto-mode SDTR instance at all scales.
-        # Preserve that exact topology only for legacy checkpoint compatibility.
-        legacy_shared_sdtr = (
-            legacy_sdtr_request
-            and diff_sharing == 'shared'
-        )
         if supervision_mode not in self.VALID_SUPERVISION_MODES:
             raise ValueError(
                 f'Unknown supervision_mode={supervision_mode!r}; '
                 f'expected one of {self.VALID_SUPERVISION_MODES}'
             )
-        if amp_phase_mode not in self.VALID_AMP_PHASE_MODES:
-            raise ValueError(
-                f'Unknown amp_phase_mode={amp_phase_mode!r}; '
-                f'expected one of {self.VALID_AMP_PHASE_MODES}'
-            )
-        if encoder_fusion_mode not in self.VALID_ENCODER_FUSION_MODES:
-            raise ValueError(
-                f'Unknown encoder_fusion_mode={encoder_fusion_mode!r}; '
-                f'expected one of {self.VALID_ENCODER_FUSION_MODES}'
-            )
-        if boundary_mode is None:
-            boundary_mode = 'edgegate' if use_edgegate else 'off'
-        elif boundary_mode not in self.VALID_BOUNDARY_MODES:
+        if boundary_mode not in self.VALID_BOUNDARY_MODES:
             raise ValueError(
                 f'Unknown boundary_mode={boundary_mode!r}; '
                 f'expected one of {self.VALID_BOUNDARY_MODES}'
             )
-        if use_edgegate and boundary_mode != 'edgegate':
-            raise ValueError('--use-edgegate conflicts with boundary_mode != "edgegate"')
-        if consistency_mode not in self.VALID_CONSISTENCY_MODES:
-            raise ValueError(
-                f'Unknown consistency_mode={consistency_mode!r}; '
-                f'expected one of {self.VALID_CONSISTENCY_MODES}'
-            )
-        if use_sfif and grmsa_mode != 'off':
-            raise ValueError('SFIF and GR-MSA are mutually exclusive decoder modes')
-        if use_sfif and decoder_mode != 'msa':
-            raise ValueError('SFIF and --decoder-mode are mutually exclusive decoder modes')
-        if decoder_mode != 'msa' and grmsa_mode != 'off':
-            raise ValueError('GR-MSA modes apply only to decoder_mode="msa"')
 
-        self.use_eaom = base_diff_mode == 'eaom'
-        self.use_sfif = use_sfif
-        self.use_prior = use_prior
-        self.use_msca = use_msca
-        self.use_stargate = use_stargate
-        self.use_edgegate = boundary_mode == 'edgegate'
-        self.use_bdsr = boundary_mode == 'bdsr'
-        self.use_lfds = bool(use_lfds)
-        self.use_tct = bool(use_tct)
-        self.grmsa_mode = grmsa_mode
+        self.diff_mode = diff_mode
+        self.diff_sharing = diff_sharing
+        self.supervision_mode = supervision_mode
         self.decoder_mode = decoder_mode
         self.head_mode = head_mode
-        # Requested historical mode, retained for checkpoint/config compatibility.
-        self.diff_mode = diff_mode
-
-        # Normalised Run14 semantics.
-        self.base_diff_mode = base_diff_mode
-        self.diff_sharing = diff_sharing
-        self.sdtr_scope = sdtr_scope
-        self.temporal_relation_mode = temporal_relation_mode
-        self.temporal_relation_plan = temporal_relation_plan
-        self.legacy_shared_sdtr = legacy_shared_sdtr
-
-        self.supervision_mode = supervision_mode
-        self.amp_phase_mode = amp_phase_mode
-        self.encoder_fusion_mode = encoder_fusion_mode
         self.boundary_mode = boundary_mode
-        self.consistency_mode = consistency_mode
+        self.use_edgegate = boundary_mode == 'edgegate'
+
         self.encoder = mobilenet_v2.mobilenet_v2(pretrained=True)
+        self.encoder_fusion = EncoderFusion(
+            inc=[16, 24, 32, 96, 320], midc=32, outc=64
+        )
 
-        if encoder_fusion_mode == 'rephfea_pyr':
-            from models.rep_hfea import RepHFEA
-            self.encoder_fusion = RepHFEA(inc=[16, 24, 32, 96, 320])
-            # Per-scale adapters preserve the richer encoder pyramid while
-            # keeping every difference implementation at the established 64ch.
-            self.diff_adapters = nn.ModuleList([
-                nn.Sequential(
-                    nn.Conv2d(cin, 64, 1, bias=False),
-                    nn.BatchNorm2d(64),
-                    nn.GELU(),
-                )
-                for cin in RepHFEA.OUT_CHANNELS
-            ])
-        else:
-            self.encoder_fusion = EncoderFusion(
-                inc=[16, 24, 32, 96, 320], midc=32, outc=64
-            )
-            self.diff_adapters = None
-
-        def make_base_diff():
-            """Construct the configured base difference operator."""
-            if self.base_diff_mode == 'eaom':
+        def make_diff():
+            if diff_mode == 'eaom':
                 from models.eaom import EAOM
                 return EAOM(64)
-
-            if self.base_diff_mode == 'cfdm':
-                return DiffModule(64)
-
-            raise RuntimeError(
-                f'Unsupported normalised base_diff_mode='
-                f'{self.base_diff_mode!r}'
-            )
-
-
-        def make_diff(scale_idx=None):
-            """Construct the effective per-scale difference/relation module."""
-
-            # --------------------------------------------------------------
-            # Historical shared SDTR compatibility path.
-            #
-            # Keep exactly one auto-mode SDTR instance so old shared-SDTR
-            # checkpoints retain their historical parameter topology.
-            # --------------------------------------------------------------
-            if self.legacy_shared_sdtr:
-                from models.temporal_relation import SDTR
-                return SDTR(64)
-
-            # No temporal relation is allowed with the new API when the
-            # difference operator itself is shared.  Therefore this is simply
-            # the shared base operator.
-            if self.diff_sharing == 'shared':
-                return make_base_diff()
-
-            if scale_idx not in (0, 1, 2, 3):
-                raise ValueError(
-                    'Independent difference modules require scale_idx 0..3'
-                )
-
-            relation_mode = self.temporal_relation_plan[scale_idx]
-
-            # --------------------------------------------------------------
-            # No temporal relation at this scale:
-            # execute the configured base difference operator.
-            # --------------------------------------------------------------
-            if relation_mode == 'off':
-                return make_base_diff()
-
-            from models.temporal_relation import SDTR
-
-            # --------------------------------------------------------------
-            # Shallow replacement:
-            # 64x64 uses 5x5 correspondence;
-            # 32x32 uses 3x3 correspondence.
-            # --------------------------------------------------------------
-            if relation_mode == 'shallow_replace':
-                if scale_idx not in (0, 1):
-                    raise RuntimeError(
-                        'shallow_replace is valid only for scales 0 and 1'
-                    )
-
-                window = 5 if scale_idx == 0 else 3
-
-                return SDTR(
-                    64,
-                    mode='shallow',
-                    window=window,
-                    temperature=0.2,
-                )
-
-            # --------------------------------------------------------------
-            # Historical Run13 deep SDTR replacement.
-            # --------------------------------------------------------------
-            if relation_mode == 'deep_replace':
-                if scale_idx not in (2, 3):
-                    raise RuntimeError(
-                        'deep_replace is valid only for scales 2 and 3'
-                    )
-
-                return SDTR(
-                    64,
-                    mode='deep',
-                    deep_relation_mode='replace',
-                )
-
-            # --------------------------------------------------------------
-            # Run14 deep temporal-relation residual augmentation.
-            # --------------------------------------------------------------
-            if relation_mode == 'deep_residual':
-                if scale_idx not in (2, 3):
-                    raise RuntimeError(
-                        'deep_residual is valid only for scales 2 and 3'
-                    )
-
-                return SDTR(
-                    64,
-                    mode='deep',
-                    deep_relation_mode='residual',
-                )
-
-            raise RuntimeError(
-                f'Unknown temporal relation plan entry={relation_mode!r}'
-            )
+            return DiffModule(64)
 
         if diff_sharing == 'shared':
             self.diff = make_diff()
         else:
-            # Explicit attributes are intentional: checkpoint keys make the
-            # Run13 sharing factor immediately auditable.
-            self.diff1 = make_diff(0)
-            self.diff2 = make_diff(1)
-            self.diff3 = make_diff(2)
-            self.diff4 = make_diff(3)
-
-        if amp_phase_mode == 'lf_shared':
-            from models.amp_phase import APID
-            self.apid1 = APID(radius_ratio=0.125)
-            self.apid2 = APID(radius_ratio=0.125)
-
-        if self.use_lfds:
-            from models.frequency_supervision import LFDS
-            self.lfds = LFDS(channels=64, patch_size=4)
-
-        if self.use_tct:
-            from models.change_tokens import TCT
-            self.tct3 = TCT(channels=64, token_num=8, num_heads=4, depth=2)
-            self.tct4 = TCT(channels=64, token_num=8, num_heads=4, depth=2)
-
-        if use_prior:
-            from models.prior import HFCPriorInjector
-            self.prior = HFCPriorInjector(64)
-
-        if use_msca:
-            from models.msca import MSCA
-            self.msca4 = MSCA(64)
-            self.msca3 = MSCA(64)
-            self.msca2 = MSCA(64)
-            self.msca1 = MSCA(64)
-
-        if use_stargate:
-            from models.stargate import StarGate
-            self.stargate4 = StarGate(64)
-            self.stargate3 = StarGate(64)
-            self.stargate2 = StarGate(64)
-            self.stargate1 = StarGate(64)
+            self.diff1 = make_diff()
+            self.diff2 = make_diff()
+            self.diff3 = make_diff()
+            self.diff4 = make_diff()
 
         if self.use_edgegate:
             from models.edgegate import EdgeGate
             self.edgegate = EdgeGate(64)
-        elif self.use_bdsr:
-            from models.bdsr import BDSR
-            self.bdsr = BDSR(64)
 
-        self.decoder_fusion = DecoderFusion(
-            64, use_sfif=use_sfif, grmsa_mode=grmsa_mode,
-            decoder_mode=decoder_mode, scale_fusion_mode=scale_fusion_mode,
-        )
+        self.decoder_fusion = DecoderFusion(64, decoder_mode=decoder_mode)
 
-        # Primary prediction head.
-        # Keep the original attribute name for backward compatibility with
-        # Run10 / historical checkpoints.
+        # Primary prediction head (scale 0 / 64x64).
         self.decoder_out = nn.Conv2d(64, 1, kernel_size=1)
 
-        # Run11: scale-decoupled prediction heads.
-        # IMPORTANT: initialise auxiliary heads as exact copies of the primary
-        # head, so shared/independent modes are functionally identical at
-        # epoch 0; the only difference is whether their parameters remain
-        # tied afterwards.
+        # Scale-decoupled heads: independent mode deep-copies the primary head
+        # so shared/independent are functionally identical at epoch 0.
         if self.head_mode == 'independent':
             self.decoder_out2 = copy.deepcopy(self.decoder_out)
             self.decoder_out3 = copy.deepcopy(self.decoder_out)
@@ -1173,35 +642,13 @@ class BaseNet(nn.Module):
         from models.rep_decoder import switch_repdw_to_deploy
         return switch_repdw_to_deploy(self)
 
-    def strip_training_only_modules(self):
-        """Remove auxiliary heads that are never used by inference.
-
-        Call this only after loading a training checkpoint.  The main forward
-        already skips LFDS unless ``return_aux=True``; deleting it also removes
-        its parameters from a serialized deployment model.
-        """
-        stripped = []
-        if hasattr(self, 'lfds'):
-            del self.lfds
-            self.use_lfds = False
-            stripped.append('lfds')
-        return tuple(stripped)
-
-    def _adapt_encoder_features(self, features):
-        if self.diff_adapters is None:
-            return tuple(features)
-        return tuple(
-            adapter(feature)
-            for adapter, feature in zip(self.diff_adapters, features)
-        )
-
     def _compute_differences(self, f1, f2):
         if self.diff_sharing == 'shared':
             return tuple(self.diff(a, b) for a, b in zip(f1, f2))
         modules = (self.diff1, self.diff2, self.diff3, self.diff4)
         return tuple(module(a, b) for module, a, b in zip(modules, f1, f2))
 
-    def forward(self, x1, x2, return_aux=False):
+    def forward(self, x1, x2):
         # feature extraction
         x1_0, x1_1, x1_2, x1_3, x1_4 = self.encoder(x1)
         x2_0, x2_1, x2_2, x2_3, x2_4 = self.encoder(x2)
@@ -1209,52 +656,9 @@ class BaseNet(nn.Module):
         # feature enhancement
         f1 = self.encoder_fusion(x1_0, x1_1, x1_2, x1_3, x1_4)
         f2 = self.encoder_fusion(x2_0, x2_1, x2_2, x2_3, x2_4)
-        f1 = self._adapt_encoder_features(f1)
-        f2 = self._adapt_encoder_features(f2)
-
-        # APID-LF acts only on the 64x64 and 32x32 feature pairs.  Separate
-        # instances provide the scale-specific zero-initialised gamma_s.
-        if self.amp_phase_mode == 'lf_shared':
-            f1_1, f2_1 = self.apid1(f1[0], f2[0])
-            f1_2, f2_2 = self.apid2(f1[1], f2[1])
-            f1 = (f1_1, f1_2, f1[2], f1[3])
-            f2 = (f2_1, f2_2, f2[2], f2[3])
-
-        # LFDS is computed lazily only when the training/validation caller
-        # explicitly asks for auxiliary predictions.
-        lfds_inputs = (f1[0], f2[0])
-
-        # Save original HFEA context for MSCA/StarGate (before Prior modifies it)
-        if self.use_msca or self.use_stargate:
-            ctx_f1 = f1
-            ctx_f2 = f2
-
-        # HFC prior injection (between HFEA and DiffModule)
-        if self.use_prior:
-            f1, f2 = self.prior(f1, f2, t1_rgb=x1, t2_rgb=x2)
 
         # feature difference
         diff1, diff2, diff3, diff4 = self._compute_differences(f1, f2)
-
-        # TCT complements the local/deep temporal relation with global change
-        # tokens only at the semantic 16x16 and 8x8 scales.
-        if self.use_tct:
-            diff3 = self.tct3(f1[2], f2[2], diff3)
-            diff4 = self.tct4(f1[3], f2[3], diff4)
-
-        # MSCA: use ORIGINAL HFEA context (pre-Prior), not Prior-modified
-        if self.use_msca:
-            diff1 = self.msca1(ctx_f1[0], ctx_f2[0], diff1)
-            diff2 = self.msca2(ctx_f1[1], ctx_f2[1], diff2)
-            diff3 = self.msca3(ctx_f1[2], ctx_f2[2], diff3)
-            diff4 = self.msca4(ctx_f1[3], ctx_f2[3], diff4)
-
-        # StarGate: multiplicative cross-temporal gating (may follow MSCA)
-        if self.use_stargate:
-            diff1 = self.stargate1(ctx_f1[0], ctx_f2[0], diff1)
-            diff2 = self.stargate2(ctx_f1[1], ctx_f2[1], diff2)
-            diff3 = self.stargate3(ctx_f1[2], ctx_f2[2], diff3)
-            diff4 = self.stargate4(ctx_f1[3], ctx_f2[3], diff4)
 
         # feature fusion
         f1, f2, f3, f4 = self.decoder_fusion(diff1, diff2, diff3, diff4)
@@ -1262,29 +666,21 @@ class BaseNet(nn.Module):
         # EdgeGate: boundary refinement on the primary head feature f1 only
         if self.use_edgegate:
             f1 = self.edgegate(f1)
-        boundary_pred = None
-        if self.use_bdsr:
-            f1, boundary_pred = self.bdsr(f1)
 
-        # ------------------------------------------------------------------
-        # Prediction heads
-        # ------------------------------------------------------------------
-        # f1 always uses the historical primary head.
+        # Prediction heads (f1 uses the primary head)
         f1 = self.decoder_out(f1)
-
         if self.head_mode == 'independent':
             f2 = self.decoder_out2(f2)
             f3 = self.decoder_out3(f3)
             f4 = self.decoder_out4(f4)
         else:
-            # Historical Run10 behaviour: one classifier shared by all scales.
             f2 = self.decoder_out(f2)
             f3 = self.decoder_out(f3)
             f4 = self.decoder_out(f4)
 
-        # The primary output always remains full-resolution.  In native SCDS
-        # mode, auxiliary predictions stay at 32/16/8 so their area-averaged
-        # targets match the semantic resolution that produced them.
+        # The primary output is always full-resolution.  In native SCDS mode,
+        # auxiliary predictions stay at 32/16/8 so their area-averaged targets
+        # match the semantic resolution that produced them.
         f1_up = F.interpolate(
             f1, scale_factor=(4, 4), mode='bilinear', align_corners=False
         )
@@ -1314,12 +710,4 @@ class BaseNet(nn.Module):
                 )),
             )
 
-        if not return_aux:
-            return outputs
-
-        aux = {}
-        if self.use_lfds:
-            aux['frequency'] = torch.sigmoid(self.lfds(*lfds_inputs))
-        if boundary_pred is not None:
-            aux['boundary'] = boundary_pred
-        return outputs, aux
+        return outputs
