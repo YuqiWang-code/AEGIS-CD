@@ -940,8 +940,8 @@ if __name__ == '__main__':
 
     # ---- Run13 explicit architecture/supervision modes ----
     parser.add_argument(
-        '--diff-mode', default='eaom', choices=['cfdm', 'eaom'],
-        help='Difference encoder (cfdm or eaom).',
+        '--diff-mode', default='eaom', choices=['eaom', 'none'],
+        help='Difference module (eaom or none).',
     )
     parser.add_argument(
         '--diff-sharing', default='independent',

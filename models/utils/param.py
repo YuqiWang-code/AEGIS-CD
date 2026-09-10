@@ -43,7 +43,7 @@ def main():
     parser.add_argument(
         '--head-mode', default='independent', choices=['shared', 'independent'],
     )
-    parser.add_argument('--diff-mode', default='eaom', choices=['cfdm', 'eaom'])
+    parser.add_argument('--diff-mode', default='eaom', choices=['eaom', 'none'])
     parser.add_argument(
         '--diff-sharing', default='independent', choices=['shared', 'independent'],
     )

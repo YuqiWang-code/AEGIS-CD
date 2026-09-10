@@ -687,7 +687,7 @@ if __name__ == '__main__':
         help='Deep-supervision profile used for loss reporting',
     )
     parser.add_argument(
-        '--diff-mode', default='eaom', choices=['cfdm', 'eaom'],
+        '--diff-mode', default='eaom', choices=['eaom', 'none'],
         help='Difference encoder; must match the checkpoint.',
     )
     parser.add_argument(

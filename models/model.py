@@ -169,201 +169,6 @@ class AggregationModule(nn.Module):
         return c_out
 
 
-# -------------------------------------------------------WFAM----------------------------------------------------------#
-class AlignedModule(nn.Module):
-    def __init__(self, channels):
-        super(AlignedModule, self).__init__()
-
-        self.wavelet = WaveletAttention(channels)
-        self.offset_conv = nn.Conv2d(channels * 2, 2, kernel_size=3, stride=1, padding=1)
-
-    def flow_warp(self, x, flow):
-        n, c, h, w = x.size()
-        norm = torch.tensor([[[[w, h]]]]).type_as(x).to(x.device)
-        col = torch.linspace(-1.0, 1.0, h).view(-1, 1).repeat(1, w)
-        row = torch.linspace(-1.0, 1.0, w).repeat(h, 1)
-        grid = torch.cat((row.unsqueeze(2), col.unsqueeze(2)), 2)
-        grid = grid.repeat(n, 1, 1, 1).type_as(x).to(x.device)
-        grid = grid + flow.permute(0, 2, 3, 1) / norm
-        output = F.grid_sample(x, grid, align_corners=True)
-        return output
-
-    def forward(self, x, y):
-        x = self.wavelet(x)
-        y = self.wavelet(y)
-        cat = torch.cat([x, y], 1)
-        offset = self.offset_conv(cat)
-        warp_y = self.flow_warp(y, offset)
-        return x, warp_y
-
-
-class ConvModule(nn.Module):
-    def __init__(self, in_channels):
-        super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
-            nn.ReLU(inplace=True)
-        )
-
-    def forward(self, x):
-        return self.conv(x)
-
-
-class WaveletAttention(nn.Module):
-    def __init__(self, channels):
-        super().__init__()
-        self.dwt = DWTForward(J=1, mode='zero', wave='haar')
-        self.idwt = DWTInverse(wave='haar')
-
-        self.high_HL = ConvModule(channels)
-        self.high_LH = ConvModule(channels)
-        self.high_HH = ConvModule(channels)
-        self.LL_attn = LLAttention(channels)
-
-        self.fuse = nn.Conv2d(channels, channels, kernel_size=1)
-        self.fc = nn.Linear(channels, channels, bias=True)
-
-    def forward(self, x):
-        x_L, x_H = self.dwt(x)
-        x_HL = x_H[0][:, :, 0, :, :]
-        x_LH = x_H[0][:, :, 1, :, :]
-        x_HH = x_H[0][:, :, 2, :, :]
-
-        x_HL_en = self.high_HL(x_HL)
-        x_LH_en = self.high_LH(x_LH)
-        x_HH_en = self.high_HH(x_HH)
-
-        x_H_en = torch.stack([x_HL_en, x_LH_en, x_HH_en], dim=2)
-        x_L_en = self.LL_attn(x_L)
-
-        x_re = self.idwt((x_L_en, [x_H_en]))
-        out = x_re + x
-        return out
-
-
-class LLAttention(nn.Module):
-    def __init__(self, dim, num_heads=4, qkv_bias=True, attn_drop=0., proj_drop=0.):
-        super().__init__()
-        assert dim % num_heads == 0
-        self.dim = dim
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
-
-        self.q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
-
-        self.proj = nn.Linear(dim, dim)
-
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-    def forward(self, x):
-        B, C, H, W = x.shape
-
-        x_flat = x.reshape(B, C, H * W).permute(0, 2, 1)
-
-        q = self.q(x_flat).reshape(B, H * W, self.num_heads, self.head_dim)
-        q = q.permute(0, 2, 1, 3)
-
-        kv = self.kv(x_flat).reshape(B, H * W, 2, self.num_heads, self.head_dim)
-        kv = kv.permute(2, 0, 3, 1, 4)
-        k, v = kv[0], kv[1]
-
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        out = (attn @ v).transpose(1, 2).reshape(B, H * W, C)
-        out = self.proj(out)
-        out = self.proj_drop(out)
-
-        out = out.transpose(1, 2).reshape(B, C, H, W)
-        return out
-
-
-# ------------------------------------------------------CFDM-----------------------------------------------------------#
-class DiffModule(nn.Module):
-    def __init__(self, channels):
-        super(DiffModule, self).__init__()
-
-        self.align = AlignedModule(channels)
-        self.conv = nn.Conv2d(channels * 2, channels, kernel_size=1, stride=1)
-        self.attention = SC_Attention(channels)
-        self.cbr = nn.Sequential(
-            nn.Conv2d(channels * 2, channels, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(channels),
-            nn.ReLU(inplace=True))
-
-    def forward(self, x, y):
-        x, y = self.align(x, y)
-        diff = torch.abs(x - y)
-        con = self.conv(torch.cat([x, y], dim=1))
-        attn = self.attention(diff, con)
-        diff_en = diff * attn
-        con_en = con * attn
-        output = torch.cat([diff_en, con_en], dim=1)
-        output = self.cbr(output)
-        return output
-
-
-class SpatialAttention(nn.Module):
-    def __init__(self, channels):
-        super(SpatialAttention, self).__init__()
-        self.conv3 = nn.Conv2d(2, 1, kernel_size=3, padding=1, bias=False)
-        self.conv5 = nn.Conv2d(2, 1, kernel_size=5, padding=2, bias=False)
-        self.conv7 = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        avg = torch.mean(x, dim=1, keepdim=True)
-        max, _ = torch.max(x, dim=1, keepdim=True)
-        cat = torch.cat([avg, max], dim=1)
-
-        attn3 = self.conv3(cat)
-        attn5 = self.conv5(cat)
-        attn7 = self.conv7(cat)
-
-        attn = attn3 + attn5 + attn7
-        attn = self.sigmoid(attn)
-        return attn
-
-
-class ChannelAttention(nn.Module):
-    def __init__(self, channels, ratio=4):
-        super(ChannelAttention, self).__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.max_pool = nn.AdaptiveMaxPool2d(1)
-
-        self.shared_mlp = nn.Sequential(
-            nn.Conv2d(channels, channels // ratio, 1, bias=False),
-            nn.ReLU(),
-            nn.Conv2d(channels // ratio, channels, 1, bias=False)
-        )
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        avgout = self.shared_mlp(self.avg_pool(x))
-        maxout = self.shared_mlp(self.max_pool(x))
-        attn = self.sigmoid(avgout + maxout)
-        return attn
-
-
-class SC_Attention(nn.Module):
-    def __init__(self, channels):
-        super(SC_Attention, self).__init__()
-        self.spatial = SpatialAttention(channels)
-        self.channel = ChannelAttention(channels)
-
-    def forward(self, diff, con):
-        attn1 = self.spatial(diff)
-        attn2 = self.channel(con)
-        attn = attn1 * attn2
-        return attn
-
-
 # -------------------------------------------------------MFFM----------------------------------------------------------#
 class DecoderFusion(nn.Module):
     """Top-down multi-scale decoder (MSA or RepDW)."""
@@ -554,7 +359,7 @@ class MSA_Module(nn.Module):
 # ----------------------------------------------------AEGIS-CD--------------------------------------------------------#
 class BaseNet(nn.Module):
     VALID_HEAD_MODES = ('shared', 'independent')
-    VALID_DIFF_MODES = ('cfdm', 'eaom')
+    VALID_DIFF_MODES = ('eaom', 'none')
     VALID_DIFF_SHARING = ('shared', 'independent')
     VALID_SUPERVISION_MODES = ('legacy', 'native')
     VALID_BOUNDARY_MODES = ('off', 'edgegate')
@@ -608,12 +413,14 @@ class BaseNet(nn.Module):
         )
 
         def make_diff():
-            if diff_mode == 'eaom':
-                from models.eaom import EAOM
-                return EAOM(64)
-            return DiffModule(64)
+            from models.eaom import EAOM
+            return EAOM(64)
 
-        if diff_sharing == 'shared':
+        if diff_mode == 'none':
+            # Pure |diff| baseline: no difference module at any scale.
+            self.diff = None
+            self.diff1 = self.diff2 = self.diff3 = self.diff4 = None
+        elif diff_sharing == 'shared':
             self.diff = make_diff()
         else:
             self.diff1 = make_diff()
@@ -643,6 +450,8 @@ class BaseNet(nn.Module):
         return switch_repdw_to_deploy(self)
 
     def _compute_differences(self, f1, f2):
+        if self.diff_mode == 'none':
+            return tuple(torch.abs(a - b) for a, b in zip(f1, f2))
         if self.diff_sharing == 'shared':
             return tuple(self.diff(a, b) for a, b in zip(f1, f2))
         modules = (self.diff1, self.diff2, self.diff3, self.diff4)
