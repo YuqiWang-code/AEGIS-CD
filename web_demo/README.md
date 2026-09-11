@@ -19,6 +19,15 @@ web_demo/
 └── README.md
 ```
 
+## 下载权重与样例
+
+`weights/` 与 `samples/` 不随 Git 仓库分发，请从 GitHub Releases 下载后解压到 `web_demo/` 根目录：
+
+- [web_demo_weights.zip](https://github.com/YuqiWang-code/AEGIS-CD/releases/download/v0.1.0/web_demo_weights.zip)（4 个 best_model，解压为 `weights/`）
+- [web_demo_samples.zip](https://github.com/YuqiWang-code/AEGIS-CD/releases/download/v0.1.0/web_demo_samples.zip)（96 张样例图，解压为 `samples/`）
+
+> zip 内已含 `weights/`、`samples/` 目录结构，直接在 `web_demo/` 根目录解压即可。
+
 ## 快速开始
 
 ### 方式一：本地运行（推荐，录屏最稳）
