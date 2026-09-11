@@ -1,3 +1,7 @@
 docs/experiment_metrics.xlsx
 docs/整理/*
 !docs/整理/RS-CD【PaperList】.xlsx
+
+# Web demo — downloaded model weights + sample imagery (large, not for git)
+web_demo/weights/
+web_demo/samples/
