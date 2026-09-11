@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AEGIS-CD · 遥感变化检测演示系统</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --bg2: #111a2e;
+    --panel: #151f35;
+    --panel2: #1b2742;
+    --border: #26334f;
+    --text: #e8eef7;
+    --muted: #8fa1bd;
+    --accent: #22d3ee;
+    --accent2: #34d399;
+    --danger: #f87171;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: radial-gradient(1200px 700px at 80% -10%, #16233f 0%, var(--bg) 55%);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  header {
+    padding: 22px 32px 18px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(34,211,238,.08), transparent);
+  }
+  header .title-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  header h1 {
+    font-size: 24px; font-weight: 700; letter-spacing: .5px;
+    background: linear-gradient(90deg, #22d3ee, #34d399);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  header .badge {
+    font-size: 12px; padding: 4px 10px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted); background: var(--panel);
+  }
+  header .sub { margin-top: 6px; font-size: 13px; color: var(--muted); }
+
+  .layout { display: grid; grid-template-columns: 320px 1fr; gap: 20px; padding: 20px 32px 40px; }
+  @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } }
+
+  /* ---------- left panel ---------- */
+  .sidebar { display: flex; flex-direction: column; gap: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px;
+  }
+  .card h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 12px; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    padding: 8px 14px; border-radius: 10px; cursor: pointer; user-select: none;
+    background: var(--panel2); border: 1px solid var(--border); color: var(--muted);
+    font-size: 13px; transition: .15s;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--text); }
+  .chip.active { background: linear-gradient(90deg, #0e7490, #065f46); color: #fff; border-color: transparent; }
+
+  .tabs { display: flex; gap: 8px; }
+  .tab {
+    flex: 1; text-align: center; padding: 8px; border-radius: 9px; cursor: pointer;
+    background: var(--panel2); border: 1px solid var(--border); color: var(--muted); font-size: 13px;
+  }
+  .tab.active { background: var(--bg2); color: var(--text); border-color: var(--accent); }
+
+  .gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; max-height: 480px; overflow-y: auto; }
+  .thumb {
+    position: relative; aspect-ratio: 1; border-radius: 9px; overflow: hidden;
+    cursor: pointer; border: 2px solid transparent; background: var(--panel2);
+  }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb.selected { border-color: var(--accent); }
+  .thumb .tag {
+    position: absolute; right: 4px; bottom: 4px; font-size: 10px; padding: 1px 5px;
+    background: rgba(0,0,0,.55); border-radius: 5px; color: #fff;
+  }
+
+  .upload-grid { display: flex; flex-direction: column; gap: 10px; }
+  .filebox {
+    display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 10px;
+    border: 1px dashed var(--border); background: var(--panel2); cursor: pointer;
+  }
+  .filebox input { display: none; }
+  .filebox .lbl { font-size: 12px; color: var(--muted); }
+  .filebox.filled { border-style: solid; border-color: var(--accent2); }
+
+  .btn {
+    width: 100%; padding: 11px; border-radius: 10px; border: none; cursor: pointer;
+    font-size: 14px; font-weight: 600; letter-spacing: .5px;
+    background: linear-gradient(90deg, #0891b2, #059669); color: #fff; transition: .15s;
+  }
+  .btn:hover { filter: brightness(1.1); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* ---------- right panel ---------- */
+  .stage { display: flex; flex-direction: column; gap: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; position: relative;
+  }
+  .panel .head {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 9px 12px; border-bottom: 1px solid var(--border);
+  }
+  .panel .head span { font-size: 13px; color: var(--muted); }
+  .panel .head b { font-size: 12px; color: var(--accent); }
+  .panel .body { position: relative; aspect-ratio: 1; background: #050a14; }
+  .panel .body img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .panel .body .placeholder {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #3b4a63; font-size: 13px;
+  }
+
+  .metrics { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; }
+  @media (max-width: 900px) { .metrics { grid-template-columns: repeat(4, 1fr); } }
+  .metric {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 12px 14px; text-align: center;
+  }
+  .metric .k { font-size: 11px; color: var(--muted); margin-bottom: 5px; }
+  .metric .v { font-size: 22px; font-weight: 700; }
+  .metric .v.hl { color: var(--accent2); }
+  .metric .u { font-size: 11px; color: var(--muted); }
+
+  .ref {
+    display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 12px 16px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    font-size: 12px; color: var(--muted);
+  }
+  .ref b { color: var(--text); }
+
+  .overlay-bar { display: flex; align-items: center; gap: 12px; }
+  .overlay-bar input[type=range] { flex: 1; }
+  .overlay-bar .lbl { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+  .loading {
+    position: absolute; inset: 0; background: rgba(8,13,26,.72); display: flex;
+    align-items: center; justify-content: center; flex-direction: column; gap: 10px;
+    color: var(--accent); font-size: 13px; z-index: 5;
+  }
+  .spinner {
+    width: 34px; height: 34px; border-radius: 50%;
+    border: 3px solid rgba(34,211,238,.25); border-top-color: var(--accent);
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .error { color: var(--danger); font-size: 13px; padding: 8px 0; }
+
+  footer { padding: 10px 32px 24px; color: #4a5870; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="title-row">
+    <h1>AEGIS-CD</h1>
+    <span class="badge" id="badge-model">Run13 E4_IndDiff_SCDS</span>
+    <span class="badge" id="badge-params">…</span>
+    <span class="badge">Siamese MobileNetV2 + HFEA + EAOM + RepDW + EdgeGate</span>
+  </div>
+  <div class="sub">轻量化遥感双时相变化检测 · 输入两时相影像 → 输出二值变化图 + 定量指标</div>
+</header>
+
+<div class="layout">
+  <!-- ===================== 左侧 ===================== -->
+  <div class="sidebar">
+    <div class="card">
+      <h3>数据集 / 模型权重</h3>
+      <div class="chips" id="dataset-chips"></div>
+    </div>
+
+    <div class="card">
+      <div class="tabs" style="margin-bottom:12px">
+        <div class="tab active" data-tab="samples" id="tab-samples">样例库</div>
+        <div class="tab" data-tab="upload" id="tab-upload">上传图片</div>
+      </div>
+
+      <!-- 样例库 -->
+      <div id="view-samples">
+        <div class="gallery" id="gallery"></div>
+      </div>
+
+      <!-- 上传 -->
+      <div id="view-upload" style="display:none">
+        <div class="upload-grid">
+          <label class="filebox" id="box-t1">
+            <input type="file" accept="image/*" id="file-t1">
+            <div class="lbl" id="lbl-t1">📷 时相 1 (T1)</div>
+          </label>
+          <label class="filebox" id="box-t2">
+            <input type="file" accept="image/*" id="file-t2">
+            <div class="lbl" id="lbl-t2">📷 时相 2 (T2)</div>
+          </label>
+          <button class="btn" id="btn-upload">运行检测</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>当前数据集测试集参考指标</h3>
+      <div class="ref" id="ref-metrics">—</div>
+    </div>
+  </div>
+
+  <!-- ===================== 右侧 ===================== -->
+  <div class="stage">
+    <div class="grid">
+      <div class="panel">
+        <div class="head"><span>时相 1 · T1</span><b>pre-change</b></div>
+        <div class="body" id="p-t1"><div class="placeholder">等待输入</div></div>
+      </div>
+      <div class="panel">
+        <div class="head"><span>时相 2 · T2</span><b>post-change</b></div>
+        <div class="body" id="p-t2"><div class="placeholder">等待输入</div></div>
+      </div>
+      <div class="panel">
+        <div class="head"><span>预测变化图 · 二值</span><b>change map</b></div>
+        <div class="body" id="p-mask"><div class="placeholder">等待检测</div></div>
+      </div>
+      <div class="panel">
+        <div class="head"><span>概率热力图</span><b>confidence</b></div>
+        <div class="body" id="p-heat"><div class="placeholder">等待检测</div></div>
+      </div>
+    </div>
+
+    <div class="card" style="padding:12px 16px">
+      <div class="overlay-bar">
+        <span class="lbl">T2 / 预测叠加对比</span>
+        <input type="range" id="overlay-slider" min="0" max="100" value="0">
+        <span class="lbl" id="overlay-mode">叠加: 关闭</span>
+      </div>
+    </div>
+
+    <div class="metrics" id="metrics"></div>
+    <div class="error" id="error-box"></div>
+  </div>
+</div>
+
+<footer>AEGIS-CD · 轻量化遥感变化检测演示系统（本地推理，PyTorch CPU）</footer>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const state = { dataset: null, samples: [], current: null, overlay: null };
+
+const M_LABELS = {
+  F1: "F1", IoU: "IoU", precision: "Precision", recall: "Recall",
+  OA: "OA", pred_change_ratio: "变化比例", infer_ms: "推理耗时",
+};
+
+async function jget(url) { const r = await fetch(url); if (!r.ok) throw new Error(r.status); return r.json(); }
+
+async function init() {
+  const meta = await jget("/api/meta");
+  window.__meta = meta;
+  $("#badge-params").textContent = meta.params_m + " M 参数";
+  const chips = $("#dataset-chips");
+  meta.datasets.forEach((d, i) => {
+    const c = document.createElement("div");
+    c.className = "chip" + (i === 0 ? " active" : "");
+    c.textContent = d.name.replace("-CD-256", "");
+    c.dataset.name = d.name;
+    c.onclick = () => selectDataset(d.name);
+    chips.appendChild(c);
+  });
+
+  const data = await jget("/api/samples");
+  state.samples = data.samples;
+  selectDataset(meta.datasets[0].name);
+}
+
+function selectDataset(ds) {
+  state.dataset = ds;
+  document.querySelectorAll(".chip").forEach((c) => {
+    c.classList.toggle("active", c.dataset.name === ds);
+  });
+  renderGallery();
+  renderReference();
+}
+
+function renderGallery() {
+  const g = $("#gallery"); g.innerHTML = "";
+  const list = state.samples.filter(s => s.dataset === state.dataset);
+  list.forEach(s => {
+    const d = document.createElement("div");
+    d.className = "thumb";
+    d.innerHTML = `<img src="${s.a}" loading="lazy"><div class="tag">${(s.change_ratio*100).toFixed(1)}%</div>`;
+    d.title = s.name;
+    d.onclick = () => { document.querySelectorAll(".thumb").forEach(x => x.classList.remove("selected")); d.classList.add("selected"); runPredict(s); };
+    g.appendChild(d);
+  });
+}
+
+function renderReference() {
+  const m = window.__meta; if (!m) return;
+  const ref = m.datasets.find(d => d.name === state.dataset).reference;
+  $("#ref-metrics").innerHTML =
+    `<span>F1 <b>${(ref.F1*100).toFixed(2)}%</b></span>` +
+    `<span>IoU <b>${(ref.IoU*100).toFixed(2)}%</b></span>` +
+    `<span>Precision <b>${(ref.P*100).toFixed(2)}%</b></span>` +
+    `<span>Recall <b>${(ref.R*100).toFixed(2)}%</b></span>` +
+    `<span>OA <b>${(ref.OA*100).toFixed(2)}%</b></span>`;
+}
+
+function showLoading(on) {
+  document.querySelectorAll(".panel .body").forEach(b => {
+    let el = b.querySelector(".loading");
+    if (on) {
+      if (!el) { el = document.createElement("div"); el.className = "loading"; el.innerHTML = '<div class="spinner"></div><div>检测中…</div>'; b.appendChild(el); }
+    } else if (el) el.remove();
+  });
+}
+
+async function runPredict(s) {
+  $("#error-box").textContent = "";
+  showLoading(true);
+  try {
+    const r = await fetch("/api/predict", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dataset: s.dataset, name: s.name })
+    });
+    if (!r.ok) throw new Error((await r.json()).error || r.status);
+    const out = await r.json();
+    state.current = out;
+    setImage("p-t1", out.t1);
+    setImage("p-t2", out.t2);
+    setImage("p-mask", out.mask);
+    setImage("p-heat", out.heat);
+    state.overlay = out.overlay;
+    renderMetrics(out.metrics);
+  } catch (e) {
+    $("#error-box").textContent = "检测失败: " + e.message;
+  } finally {
+    showLoading(false);
+  }
+}
+
+function setImage(id, dataUrl) {
+  const b = $("#" + id); b.innerHTML = "";
+  const img = document.createElement("img"); img.src = dataUrl; b.appendChild(img);
+}
+
+function renderMetrics(m) {
+  const box = $("#metrics"); box.innerHTML = "";
+  const order = ["F1", "IoU", "precision", "recall", "OA", "pred_change_ratio", "infer_ms"];
+  order.forEach(k => {
+    if (!(k in m)) return;
+    const d = document.createElement("div"); d.className = "metric";
+    let v = m[k], u = "";
+    if (["F1","IoU","precision","recall","OA"].includes(k)) { v = (m[k]*100).toFixed(2); u = "%"; }
+    else if (k === "infer_ms") { v = m[k]; u = "ms"; }
+    else { v = (m[k]*100).toFixed(2); u = "%"; }
+    d.innerHTML = `<div class="k">${M_LABELS[k] || k}</div><div class="v ${k==='F1'?'hl':''}">${v}</div><div class="u">${u}</div>`;
+    box.appendChild(d);
+  });
+}
+
+// ---------- overlay slider ----------
+$("#overlay-slider").addEventListener("input", (e) => {
+  const pct = parseInt(e.target.value);
+  if (!state.current) return;
+  if (pct === 0) {
+    setImage("p-mask", state.current.mask);
+    $("#overlay-mode").textContent = "叠加: 关闭";
+  } else {
+    // blend t2 and overlay client-side
+    blendImages(state.current.t2, state.current.overlay, pct / 100, (url) => {
+      setImage("p-mask", url);
+      $("#overlay-mode").textContent = "叠加: " + pct + "%";
+    });
+  }
+});
+
+function blendImages(aSrc, bSrc, alpha, cb) {
+  const a = new Image(), b = new Image();
+  let n = 0;
+  const done = () => { if (++n < 2) return; const c = document.createElement("canvas");
+    c.width = a.width; c.height = a.height; const ctx = c.getContext("2d");
+    ctx.drawImage(a, 0, 0); ctx.globalAlpha = alpha; ctx.drawImage(b, 0, 0);
+    cb(c.toDataURL("image/png")); };
+  a.onload = done; b.onload = done; a.src = aSrc; b.src = bSrc;
+}
+
+// ---------- upload ----------
+function setFilebox(field) {
+  const inp = $("#file-" + field), box = $("#box-" + field), lbl = $("#lbl-" + field);
+  inp.onchange = () => {
+    if (inp.files.length) { box.classList.add("filled"); lbl.textContent = "✔ " + inp.files[0].name; }
+  };
+}
+setFilebox("t1"); setFilebox("t2");
+
+$("#btn-upload").onclick = async () => {
+  const t1 = $("#file-t1").files[0], t2 = $("#file-t2").files[0];
+  if (!t1 || !t2) { $("#error-box").textContent = "请先选择时相 1 和时相 2 两张图片"; return; }
+  const fd = new FormData();
+  fd.append("t1", t1); fd.append("t2", t2); fd.append("dataset", state.dataset);
+  $("#error-box").textContent = ""; showLoading(true);
+  try {
+    const r = await fetch("/api/upload_predict", { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.json()).error || r.status);
+    const out = await r.json();
+    state.current = out;
+    setImage("p-t1", out.t1); setImage("p-t2", out.t2);
+    setImage("p-mask", out.mask); setImage("p-heat", out.heat);
+    state.overlay = out.overlay;
+    renderMetrics(out.metrics);
+  } catch (e) {
+    $("#error-box").textContent = "检测失败: " + e.message;
+  } finally { showLoading(false); }
+};
+
+// ---------- tabs ----------
+function switchTab(t) {
+  $("#tab-samples").classList.toggle("active", t === "samples");
+  $("#tab-upload").classList.toggle("active", t === "upload");
+  $("#view-samples").style.display = t === "samples" ? "" : "none";
+  $("#view-upload").style.display = t === "upload" ? "" : "none";
+}
+$("#tab-samples").onclick = () => switchTab("samples");
+$("#tab-upload").onclick = () => switchTab("upload");
+
+init().catch(e => { $("#error-box").textContent = "初始化失败: " + e.message; });
+</script>
+</body>
+</html>

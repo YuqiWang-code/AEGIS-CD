@@ -1,0 +1,12 @@
+# AEGIS-CD demo — runtime dependencies (CPU inference)
+# The model code lives in ../models and imports from there.
+
+torch>=2.0
+torchvision>=0.15
+numpy
+opencv-python-headless
+einops
+pytorch_wavelets
+PyWavelets
+flask
+Pillow
