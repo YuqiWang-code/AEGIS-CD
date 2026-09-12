@@ -6,3 +6,9 @@ docs/整理/*
 # Web demo — downloaded model weights + sample imagery (large, not for git)
 web_demo/weights/
 web_demo/samples/
+
+# Visualization — commit figures/scripts; exclude caches, archives, training logs
+Visualization/__pycache__/
+Visualization/*.pyc
+Visualization/*.zip
+Visualization/logs/
