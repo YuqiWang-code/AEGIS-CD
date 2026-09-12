@@ -3,9 +3,8 @@ docs/整理/*
 !docs/整理/RS-CD【PaperList】.xlsx
 !docs/整理/AEGIS-CD_Diagrams.pptx
 
-# Web demo — downloaded model weights + sample imagery (large, not for git)
+# Web demo — model weights are large; download via GitHub Releases (not in git)
 web_demo/weights/
-web_demo/samples/
 
 # Visualization — commit figures/scripts; exclude caches, archives, training logs
 Visualization/__pycache__/
