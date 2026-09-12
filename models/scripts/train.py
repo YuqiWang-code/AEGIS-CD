@@ -1,15 +1,16 @@
 """
 AEGIS-CD  —  Training Entry Point
 ===================================
-Usage::
+The defaults below are the AEGIS-CD configuration
+(EAOM independent + native SCDS + RepDW decoder + independent heads + EdgeGate)::
 
-    # Baseline (CFDM)
     python models/scripts/train.py --dataset LEVIR-CD-256 --epochs 200 \\
-        --batch-size 48 --lr 5e-4 --val-interval 10 --val-split val
+        --batch-size 64 --lr 5e-4 --val-interval 10 --val-split val \\
+        --deterministic --color-order fixed
 
-    # EAOM ablation
-    python models/scripts/train.py --dataset LEVIR-CD-256 --epochs 200 \\
-        --batch-size 48 --lr 5e-4 --val-interval 10 --val-split val --use-eaom
+Every architecture axis is exposed as an explicit CLI flag; run
+``--help`` for the full list.  ``train_scripts/baseline/`` holds the
+canonical 4-dataset launcher.
 """
 
 import sys
@@ -131,13 +132,13 @@ def validate_protocol_signature(checkpoint_signature, current_signature):
 #  Loss helpers — imported from the single source of truth
 # =========================================================
 
-from models.utils.losses import DS_PROFILES, run13_supervised_loss
+from models.utils.losses import DS_PROFILES, scds_supervised_loss
 
 
 def supervised_forward(args, model, pre_img, post_img, targets):
     """Forward main predictions and compute the SCDS loss."""
     outputs = model(pre_img, post_img)
-    loss, components = run13_supervised_loss(
+    loss, components = scds_supervised_loss(
         outputs,
         targets,
         profile=args.ds_profile,
@@ -390,7 +391,7 @@ def print_banner(args, model, dataset_root, train_loader, val_loader, test_loade
         f'weights={DS_PROFILES[args.ds_profile]}, '
         f'dice={args.dice_reduction}'
     )
-    # ---- Run12 configuration ----
+    # ---- colour / reproducibility configuration ----
     lines.append(f'  Color order   : {args.color_order}')
     lines.append(f'  Deterministic : {"ON" if args.deterministic else "OFF"}')
 
@@ -415,7 +416,7 @@ def print_banner(args, model, dataset_root, train_loader, val_loader, test_loade
 def trainValidateSegmentation(args):
     t_start = time.time()
 
-    # Run12: deterministic mode disables cudnn.benchmark for strict reproducibility
+    # Deterministic mode disables cudnn.benchmark for strict reproducibility
     if args.deterministic:
         cudnn.benchmark = False
         cudnn.deterministic = True
@@ -455,7 +456,7 @@ def trainValidateSegmentation(args):
     )
 
     print(
-        'Run13 E4 protocol signature prepared '
+        'AEGIS-CD protocol signature prepared '
         f'(version={current_protocol_signature["version"]})'
     )
 
@@ -466,7 +467,7 @@ def trainValidateSegmentation(args):
     mean = [0.406, 0.456, 0.485, 0.406, 0.456, 0.485]
     std = [0.225, 0.224, 0.229, 0.225, 0.224, 0.229]
 
-    # Run12: build transform list dynamically
+    # Build the training transform list dynamically
     train_transforms = [
         myTransforms.Scale(args.inWidth, args.inHeight),
         myTransforms.RandomCropResize(int(7. / 224. * args.inWidth)),
@@ -497,7 +498,7 @@ def trainValidateSegmentation(args):
         num_workers=args.num_workers, pin_memory=False, drop_last=True,
         worker_init_fn=seed_worker, generator=train_generator)
 
-    # Validation selects the best checkpoint; Run9 uses val.txt explicitly.
+    # Validation selects the best checkpoint; val.txt is used explicitly.
     val_data = myDataLoader.Dataset(
         'val', file_root=dataset_root, transform=valDataset,
         list_name=args.val_split)
@@ -790,7 +791,7 @@ def trainValidateSegmentation(args):
             'dataset': args.dataset,
             'batch_size': args.batch_size,
 
-            # Strict Run14 full-resume protocol.
+            # Strict full-resume protocol.
             'protocol_signature': current_protocol_signature,
 
             # Full human-readable experiment configuration.
@@ -856,7 +857,7 @@ def trainValidateSegmentation(args):
     logger.flush()
     logger.close()
 
-    # Run13 master scripts use this marker strictly for crash-safe resume, not
+    # The launcher scripts use this marker strictly for crash-safe resume, not
     # for result-based experiment selection.  It is created only after the
     # best-val checkpoint has completed its one held-out test evaluation.
     completion_path = os.path.join(args.savedir, '.run_complete')
@@ -938,7 +939,7 @@ if __name__ == '__main__':
         help='Deep-supervision weight profile.',
     )
 
-    # ---- Run13 explicit architecture/supervision modes ----
+    # ---- explicit architecture/supervision modes ----
     parser.add_argument(
         '--diff-mode', default='eaom', choices=['eaom', 'none'],
         help='Difference module (eaom or none).',
@@ -963,7 +964,7 @@ if __name__ == '__main__':
         help='Boundary refinement.',
     )
 
-    # ---- Run12 parameters ----
+    # ---- reproducibility parameters ----
     parser.add_argument(
         '--deterministic', action='store_true',
         help='Enable strict deterministic mode (disable cudnn.benchmark)',

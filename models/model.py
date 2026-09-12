@@ -1,6 +1,6 @@
-"""AEGIS-CD change detector (Run13 E4 architecture).
+"""AEGIS-CD change detector.
 
-Siamese MobileNetV2 + HFEA + EAOM/CFDM difference + RepDW decoder + EdgeGate,
+Siamese MobileNetV2 + HFEA + EAOM difference encoder + RepDW decoder + EdgeGate,
 with scale-decoupled independent heads and native (SCDS) deep supervision.
 """
 
@@ -21,8 +21,8 @@ def validate_checkpoint_head_mode(state_dict, head_mode):
     A checkpoint with ``decoder_out2/3/4.*`` keys was trained with
     ``head_mode='independent'``; a checkpoint without them was trained with
     ``head_mode='shared'``.  Structure mismatches must fail loudly (never be
-    silently swallowed with ``strict=False``) because head mode is a Run11
-    experimental variable.
+    silently swallowed with ``strict=False``) because head mode changes the
+    checkpoint's key set.
     """
     has_independent = any(
         k.startswith(('decoder_out2.', 'decoder_out3.', 'decoder_out4.'))

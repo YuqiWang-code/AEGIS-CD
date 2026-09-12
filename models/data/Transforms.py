@@ -6,7 +6,7 @@ import numpy
 
 
 class AmpMix(object):
-    """Amplitude-invariant augmentation (Run12).
+    """Amplitude-invariant augmentation.
 
     Replace spatial image with another image's amplitude spectrum in FFT domain,
     reducing illumination/contrast pseudo-changes while preserving structure.

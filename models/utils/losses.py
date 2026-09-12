@@ -1,6 +1,6 @@
 """
 Shared loss utilities — single source of truth for BCEDiceLoss and
-deep-supervision weight profiles (Run11).
+deep-supervision weight profiles.
 
 Both ``train.py`` and ``test.py`` import from here so the DS profiles can
 never silently drift apart.
@@ -10,10 +10,10 @@ import torch.nn.functional as F
 
 
 DS_PROFILES = {
-    # Historical Run10 behaviour.
+    # Default deep supervision: progressively weaker auxiliary heads.
     'legacy':   (1.0, 0.8, 0.4, 0.2),
-    # Run11: primary-output-oriented deep supervision.
-    # Keep main loss coefficient fixed at 1.0 and reduce auxiliary pressure.
+    # Primary-output-oriented deep supervision: keep the main loss
+    # coefficient fixed at 1.0 and reduce auxiliary pressure.
     'primary':  (1.0, 0.5, 0.25, 0.125),
     # Diagnostic anchor: remove direct supervision from f2/f3/f4.
     'main_only': (1.0, 0.0, 0.0, 0.0),
@@ -26,9 +26,10 @@ VALID_DICE_REDUCTIONS = ('batch_global', 'per_image')
 def BCEDiceLoss(inputs, targets, dice_reduction='batch_global'):
     """Binary cross-entropy plus selectable soft-Dice reduction.
 
-    ``batch_global`` exactly preserves the historical Run12 loss and is the
-    fixed Run13 protocol, keeping E1 a clean control. ``per_image`` remains
-    available as an explicit future ablation rather than a silent code drift.
+    ``batch_global`` accumulates the Dice numerator and denominator over the
+    whole batch and is the default training protocol. ``per_image`` computes
+    Dice per sample and averages, available as an explicit alternative rather
+    than a silent code drift.
     """
     if inputs.shape != targets.shape:
         raise ValueError(
@@ -75,7 +76,7 @@ def deep_supervision_loss(outputs, targets, profile,
         profile: one of DS_PROFILES keys.
         supervision_mode: ``legacy`` supervises four full-resolution
             predictions. ``native`` area-averages the target independently to
-            each prediction resolution (SCDS, Run13).
+            each prediction resolution (SCDS).
     """
     if profile not in DS_PROFILES:
         raise ValueError(
@@ -121,7 +122,7 @@ def deep_supervision_loss(outputs, targets, profile,
     return loss
 
 
-def run13_supervised_loss(outputs, targets, profile='legacy',
+def scds_supervised_loss(outputs, targets, profile='legacy',
                           supervision_mode='legacy',
                           dice_reduction='batch_global'):
     """SCDS deep-supervision loss.

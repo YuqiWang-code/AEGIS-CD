@@ -5,11 +5,11 @@ Lightweight boundary-sharpening module inserted at the decoder *head*.
 
 Motivation (SFEARNet, IEEE 2025 — Semantic Flow + Edge-Aware Refinement):
   Change-detection F1/IoU losses concentrate on the *boundary* of change
-  regions.  The upstream modules (EAOM / MSCA / SFIF) operate on the 64-ch
+  regions.  The upstream modules (EAOM and the decoder) operate on the 64-ch
   diff / decoder features holistically, but nothing explicitly sharpens the
   change-region boundary.  EGBR injects boundary detail at the final head,
-  which is orthogonal to the diff-refinement chain — so it cannot suffer the
-  chain-stacking negative interaction observed in Run6/Run7.
+  which is orthogonal to the diff-refinement chain, so it does not interfere
+  with the refinement stages.
 
 Design — additive residual detail injection (NOT a multiplicative gate):
     edge   = sigmoid( DWConv(BN(ReLU(f1))) -> 1x1(C->1) )   # boundary map
@@ -17,9 +17,9 @@ Design — additive residual detail injection (NOT a multiplicative gate):
     out    = f1 + scale * detail * edge                     # residual injection
 
 Key properties:
-  1. **Additive** — `out = f1 + ...`, identity preserved.  Unlike StarGate's
-     multiplicative `diff + diff*g`, an additive boundary-detail injection
-     cannot zero out the feature (Run7 showed multiplicative gating hurts).
+  1. **Additive** — `out = f1 + ...`, identity preserved.  Unlike a
+     multiplicative gate `diff + diff*g`, an additive boundary-detail
+     injection cannot zero out the feature.
   2. **Warm-start identity** — `scale` is initialised to 0, so the module is
      an exact identity at epoch 0 and only *learns* to add boundary detail.
   3. **Orthogonal position** — applied only to the primary head feature f1

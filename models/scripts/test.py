@@ -45,7 +45,7 @@ from models.utils.losses import deep_supervision_loss
 
 
 def resolve_explicit_modes(args):
-    """Normalise the explicit Run13 mode fields (defaults already set)."""
+    """Normalise the explicit architecture mode fields (defaults already set)."""
 
 
 def cli_option_was_provided(option_name):
@@ -84,7 +84,7 @@ def apply_checkpoint_value(
 
 
 def load_checkpoint_for_evaluation(checkpoint_path):
-    """Load raw legacy weights or a metadata-aware Run14 checkpoint."""
+    """Load raw legacy weights or a metadata-aware checkpoint."""
     if not os.path.isfile(checkpoint_path):
         raise FileNotFoundError(
             f'Checkpoint not found: {checkpoint_path}'
@@ -122,7 +122,7 @@ def load_checkpoint_for_evaluation(checkpoint_path):
 
 
 def apply_checkpoint_protocol(args, signature):
-    """Restore evaluation/model protocol from a Run14 checkpoint."""
+    """Restore evaluation/model protocol from a metadata-aware checkpoint."""
     apply_checkpoint_value(
         args, signature,
         'dataset', 'dataset', '--dataset',
@@ -526,7 +526,7 @@ def ValidateSegmentation(args):
 
     resolve_explicit_modes(args)
 
-    # Run12: deterministic mode
+    # Deterministic mode: disable cudnn.benchmark for strict reproducibility
     if args.deterministic:
         cudnn.benchmark = False
         cudnn.deterministic = True
@@ -601,7 +601,7 @@ def ValidateSegmentation(args):
     ])
 
     # ---- data loader ----
-    # Run12: support --eval-split to choose val or test
+    # --eval-split chooses val or test
     test_data = myDataLoader.Dataset(
         args.eval_split, file_root=dataset_root, transform=valDataset,
         list_name=args.eval_split)
@@ -627,9 +627,12 @@ def ValidateSegmentation(args):
         'Checkpoint weights loaded with strict=True'
     )
 
-    stripped = model.strip_training_only_modules()
-    if stripped:
-        print(f'Removed training-only modules for inference: {", ".join(stripped)}')
+    # NOTE: there are no training-only modules to strip.  The deep-supervision
+    # auxiliary heads (decoder_out2/3/4) are part of the model's forward() and
+    # are still constructed and returned at inference time, so the model is
+    # used exactly as loaded.  (A legacy call to a non-existent
+    # ``model.strip_training_only_modules()`` used to live here and made every
+    # non-smoke evaluation crash with AttributeError.)
 
     if args.deploy_reparam:
         model.eval()
@@ -714,7 +717,7 @@ if __name__ == '__main__':
         help='Fuse RepDW training branches before smoke test/evaluation',
     )
 
-    # ---- Run12 parameters ----
+    # ---- reproducibility parameters ----
     parser.add_argument(
         '--deterministic', action='store_true',
         help='Enable strict deterministic mode (disable cudnn.benchmark)',

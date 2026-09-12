@@ -1,7 +1,7 @@
 """
-EAOM — Edge-Aware Oracle Module  (v2, DAWIM removed)
-======================================================
-Zero-parameter frequency-domain replacement for CFDM (DiffModule).
+EAOM — Edge-Aware Oracle Module
+================================
+Wavelet-domain difference encoder for bi-temporal change detection.
 
 Key features:
 1. **HF rotation-invariant energy** — Euclidean norm sqrt(LH²+HL²+HH²)
@@ -14,10 +14,12 @@ Key features:
    saves parameters for the fusion stage.
 5. **Anti-aliasing blur** — fixed Gaussian kernel before DWT suppresses
    Haar checkerboard artifacts from sub-pixel mis-registration.
-6. **T1 prior injection** — Hadamard product of T1 features with IDWT
-   output filters seasonal spectral drift from real structural change.
 
-I/O contract — identical to DiffModule
+The fixed DWT/IDWT and the energy norm are parameter-free, but the module as a
+whole contains several learnable convolutions and is therefore not a
+"zero-parameter" block.
+
+I/O contract
     Input:  f1 [B, C, H, W],  f2 [B, C, H, W]
     Output: [B, C, H, W]
 """
@@ -48,7 +50,7 @@ def make_gaussian_kernel(kernel_size=3, sigma=0.8, channels=64):
 # =========================================================
 
 class EAOM(nn.Module):
-    """Edge-Aware Oracle Module — drop-in replacement for ``DiffModule``."""
+    """Edge-Aware Oracle Module — wavelet-domain difference encoder."""
 
     def __init__(self, channels=64, expansion=1.0):
         super(EAOM, self).__init__()
