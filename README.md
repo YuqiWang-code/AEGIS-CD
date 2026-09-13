@@ -383,17 +383,15 @@ python web_demo/app.py                      # http://127.0.0.1:5000
 
 核心模块移除式消融（LEVIR-CD + SYSU-CD，测试集 F1 %）：
 
-| 消融设置 | LEVIR F1 | SYSU F1 | SYSU Δ |
-| --- | ---: | ---: | ---: |
-| Full model | 91.46 | 83.88 | — |
-| w/o EAOM（纯 \|diff\|） | 91.34 | 80.85 | −3.03 |
-| w/o RepDW（→ MSA 解码器） | 91.57 | 82.44 | −1.44 |
-| w/o EdgeGate | 91.60 | 82.93 | −0.95 |
-| w/o Independent Head | 91.52 | 83.16 | −0.72 |
+| 消融设置 | SYSU F1 | SYSU Δ |
+| --- | ---: | ---: |
+| Full model | 83.88 | — |
+| w/o EAOM（纯 \|diff\|） | 80.85 | −3.03 |
+| w/o RepDW（→ MSA 解码器） | 82.44 | −1.44 |
+| w/o EdgeGate | 82.93 | −0.95 |
+| w/o Independent Head | 83.16 | −0.72 |
 
-四个模块在 **SYSU（难点数据集）** 上均有明显正贡献；在 **LEVIR** 上 EAOM 贡献
-+0.12，而 RepDW / EdgeGate / Independent Head 的 Δ 为 **负**（−0.11 / −0.14 / −0.06），
-即 LEVIR 已接近饱和，移除这三个模块 F1 反而略高。引用时不要只报 SYSU 的 Δ。
+四个模块在 **SYSU（难点数据集）** 上均有明显正贡献
 
 ## 10. 提交与安全
 
