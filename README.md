@@ -3,7 +3,7 @@
 GitHub 仓库：[YuqiWang-code/AEGIS-CD](https://github.com/YuqiWang-code/AEGIS-CD)
 
 以后更新根目录 `README.md`、本地 `models/`、`web_demo/`、`Visualization/`（论文/比赛图稿）
-或 `docs/整理/`（PaperList、架构图 pptx）后，在项目根目录执行：
+或 `docs/整理/`（PaperList、架构图 pptx、比赛规则 pdf）后，在项目根目录执行：
 
 ```bash
 git add README.md
@@ -12,6 +12,7 @@ git add web_demo/
 git add Visualization/
 git add docs/整理/RS-CD【PaperList】.xlsx
 git add docs/整理/AEGIS-CD_Diagrams.pptx
+git add docs/整理/JSAI2025.pdf
 git commit -m "Update AEGIS-CD"
 git push
 ```
