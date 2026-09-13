@@ -1,3 +1,27 @@
+# GitHub 更新方式（README.md / models / web_demo / Visualization / docs/整理/）
+
+GitHub 仓库：[YuqiWang-code/AEGIS-CD](https://github.com/YuqiWang-code/AEGIS-CD)
+
+以后更新根目录 `README.md`、本地 `models/`、`web_demo/`、`Visualization/`（论文/比赛图稿）
+或 `docs/整理/`（PaperList、架构图 pptx）后，在项目根目录执行：
+
+```bash
+git add README.md
+git add models/
+git add web_demo/
+git add Visualization/
+git add docs/整理/RS-CD【PaperList】.xlsx
+git add docs/整理/AEGIS-CD_Diagrams.pptx
+git commit -m "Update AEGIS-CD"
+git push
+```
+
+> 注：`docs/experiment_metrics.xlsx`（完整实验指标）与 `web_demo/weights/`（大文件，走
+> GitHub Releases 分发），以及 `Visualization/` 下的 `__pycache__/`、`*.zip`、`logs/`
+> 不上传 GitHub，仅保留本地。`web_demo/samples/`（96 张样例图）已随仓库提交。
+
+---
+
 # AEGIS-CD 协作说明
 
 本文件适用于仓库根目录及所有子目录。开始任务前先阅读本文件，再阅读相关代码。
@@ -15,21 +39,53 @@ AEGIS-CD 是一个**轻量化遥感二时相影像变化检测**模型，用于�
 
 ## 2. 环境
 
+### 2.1 环境创建（服务器）
+
 ```bash
-conda activate aegiscd          # Python 3.10, PyTorch cu128
+conda create -n aegiscd python=3.10 -y
+conda activate aegiscd
+
+# PyTorch cu128
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
+# 其余依赖
 pip install einops fvcore numpy pillow tqdm pyyaml thop scipy opencv-python matplotlib
 pip install pytorch_wavelets PyWavelets
 ```
+
+### 2.2 服务器信息
 
 | 项 | 值 |
 | --- | --- |
 | 服务器 | `100.81.254.36`（用户名 `hzeng`；凭据见 `.vscode/sftp.json`） |
 | 项目路径 | `/home/hzeng/project/ZH/AIC/` |
 | 数据根 | `/home/hzeng/project/ZH/data/CD/` |
-| GPU | 2 × RTX 5090 (32 GB) |
+| GPU | 2 × NVIDIA GeForce RTX 5090（~32 GB/卡） |
+| CUDA Driver | 13.1 |
 | conda 环境 | `aegiscd` |
 
-> `pytorch_wavelets` 依赖 `pkg_resources`（DTCWT 子包在 import 时使用）。
+### 2.3 预训练权重
+
+| 文件 | 路径 |
+| --- | --- |
+| MobileNetV2 ImageNet-1K | `pre-trained_weights/mobilenet_v2-b0353104.pth` |
+
+`mobilenet_v2.py` 中的 `mobilenet_v2(pretrained=True)` 自动从 `pre-trained_weights/`
+加载，构造模型时必需。
+
+### 2.4 关键依赖
+
+| 包 | 用途 |
+| --- | --- |
+| torch (cu128) | 深度学习框架 |
+| einops | 张量重排 |
+| thop | FLOPs 统计 |
+| numpy / pillow / tqdm / scipy | 训练辅助 |
+| opencv-python | 图像读取 |
+| pytorch_wavelets | DWT 小波变换 |
+| PyWavelets | DWT 底层依赖 |
+
+> `pytorch_wavelets` 的 DTCWT 子包在 import 时使用 `pkg_resources`。
 > `setuptools>=81` 会触发 `ModuleNotFoundError: pkg_resources`
 > （DWT 本身不使用它，import 前加一条 `warnings.filterwarnings` 即可静音）。
 
@@ -136,20 +192,62 @@ IDWT 重建后与对齐二时相上下文做 `sigmoid(q·k)` **逐元素门控**
 
 ## 5. 数据
 
+### 5.1 目录结构
+
 结构：`<data_root>/<DATASET>/{A,B,label,list}/`，`list/{train,val,test}.txt` 每行一个文件名。
 
-| 数据集 | 样本数 | 格式 | 备注 |
-| --- | --- | --- | --- |
-| LEVIR-CD-256 | 10,192 | PNG | 建筑增长/拆除，正类稀少 |
-| WHU-CD-256 | 7,434 | PNG | 震后重建，建筑密集 |
-| SYSU-CD-256 | 20,000 | PNG | 变化类型最杂，标签较粗 |
-| CDD-CD-256 | 15,998 | **JPG** | list 为纯数字，`dataset.py` 自动解析为 `{split}_{name}.jpg` |
+```
+/home/hzeng/project/ZH/data/CD/<DATASET_NAME>/
+├── A/              # 时相 1（pre-change）影像
+├── B/              # 时相 2（post-change）影像
+├── label/          # 二值变化标签（0 = 未变化，255 = 变化）
+└── list/           # train.txt / val.txt / test.txt
+```
 
 `dataset.py` 按 `<root>/A|B|label/<name>` 读取，支持列表回退结构
 `<dataset_root>/<split>/list/<split>.txt`。
 
-**颜色协议**：OpenCV 读入 BGR → 两时相拼为六通道 →
-`Normalize` 用与 BGR 对应的均值/标准差 →
+### 5.2 各数据集详情
+
+| 数据集 | 样本数 | 格式 | 命名 / list | 特殊处理 |
+| --- | --- | --- | --- | --- |
+| LEVIR-CD-256 | 10,192 | PNG | `train_100_10.png` / list 含 `.png` | 无 |
+| LEVIR-CD+256 | 15,760 | PNG | `train_100_00.png` / list 含 `.png` | 无（当前实验未用） |
+| SYSU-CD-256 | 20,000 | PNG | `00000.png`…`19999.png`；0–11999 train / 12000–15999 val / 16000–19999 test | 无 |
+| WHU-CD-256 | 7,434 | PNG | `whucd_00001.png`…；list 目录共 26 个文件，**仅用 train/val/test** | 忽略半监督划分文件 |
+| CDD-CD-256 | 15,998 | **JPG** | list 为**纯数字**（无扩展名、无 split 前缀） | 自动解析为 `{split}_{name}.jpg` |
+
+CDD 的 `_resolve_filename()` 按顺序自动探测：① 原样（含扩展名则信任）→
+② `{split}_{name}.{ext}` → ③ `{name}.{ext}`，对调用方透明。
+
+### 5.3 场景特点与建模难点
+
+四数据集共同特点：双时相配准良好但存在辐射差异（光照/色调/阴影/季节植被 → 伪变化）；
+变化类通常少于未变化类（易偏向背景）；目标尺度跨度大；`256×256` 裁剪带来边界效应；
+建筑重要但不是唯一变化类型（过强建筑先验会损害 SYSU/CDD）。
+
+| 数据集 | 核心场景 | 典型分辨率 | 主要难点 |
+| --- | --- | --- | --- |
+| LEVIR-CD-256 | 得州建筑增长/拆除 | ~0.5 m | 正类稀少、小建筑召回、季节/光照伪变化 |
+| SYSU-CD-256 | 香港及周边通用城市/郊区变化 | ~0.5 m | 类型最杂、标签较粗、植被/水体/光照干扰 |
+| WHU-CD-256 | 基督城震后建筑重建 | ~0.2–0.3 m | 建筑密集且相似、正类稀少、单一大图来源 |
+| CDD-CD-256 | 多源季节与灾害场景 | ~3 cm–1 m | 强伪变化、跨尺度、多场景 |
+
+- **LEVIR**：建筑增长与拆除为主，独立变化实例多、尺度差异大；正类约占 4.65%。
+  适合检验多尺度建筑表征与时相不变特征，但不能据此证明对通用变化有效。
+- **SYSU**（重点难点）：变化类型最杂（城市扩张、建筑、道路、植被、填海、海域、
+  场地整理），标注粗糙，植被/水体/阴影/光照产生强外观差异但不一定是真实语义变化。
+  要求**通用变化表征**而非建筑专用边缘先验；分析时同时看 P/R/IoU 与分场景错误。
+- **WHU**：变化高度集中于建筑新增/拆除/重建，建筑密集且外观相似；来自单一大图，
+  空间邻近 patch 相关性强，划分和随机种子可能影响结果解释。
+- **CDD**：多源、季节 + 灾害前后，分辨率跨度最大，伪变化干扰强；较高总体 F1
+  不代表所有场景都解决，应防止多数易样本掩盖特定场景失败。
+
+> 像素比例等统计值为引用口径，用于论文定量结论前应通过本地标签重新审计。
+
+### 5.4 颜色协议
+
+OpenCV 读入 BGR → 两时相拼为六通道 → `Normalize` 用与 BGR 对应的均值/标准差 →
 `ToTensor(color_order='fixed')` 分别反转每个时相的三个通道为 RGB，保留时相顺序。
 `legacy` 会反转整个六通道数组，导致**时相交换**，仅为历史兼容保留。
 颜色协议必须与 checkpoint 一致。
@@ -178,6 +276,25 @@ IDWT 重建后与对齐二时相上下文做 `sigmoid(q·k)` **逐元素门控**
 | `--seed` | 2333 | |
 | `--num-workers` | 4 | |
 
+### 6.1 训练日志
+
+每次训练启动时 `train.py` 打印完整配置头（Dataset / Params / FLOPs / Modules / GPU /
+Optimizer / LR / Batch / Epochs / Val interval / Loss / Seed / Save dir …）并写入
+`trainValLog.txt` 顶部。每 epoch 输出：
+
+```
+[14:35:22] Epoch 11/200 | TrLoss=0.1523 | VaLoss=0.1431 | F1(train)=0.8123 | F1(val)=0.8045 | best=0.8045 | elapsed=5m ETA=95m ★ BEST
+```
+
+`trainValLog.txt` 末尾为累计指标表（`Epoch / TrLoss / VaLoss / OA / IoU / F1 / R / P / BestF1`），
+最后一行为 `TEST RESULTS | OA=... IoU=... F1=... R=... P=...`（加载最佳权重后对测试集评估）。
+
+| 注意事项 | 说明 |
+| --- | --- |
+| FLOPs 统计 | 用 `thop.profile`（非 fvcore）。`fvcore` 不支持 `pytorch_wavelets` 的 DWT 算子，结果不准。 |
+| GPU 显存 | RTX 5090 32 GB，batch 64 约占用 ~20 GB。 |
+| PYTHONPATH | 无需设置，`train.py` 顶部自动把项目根目录加入 `sys.path`。 |
+
 ## 7. 目录结构
 
 ```
@@ -202,8 +319,9 @@ saved_models/
 └── all/Run13/              历史实验记录
 
 web_demo/                   浏览器演示系统（Flask + 单页前端）
+Visualization/              论文/比赛图稿 + 生成脚本
 analyse/                    日志 → Excel 汇总脚本
-docs/                       数据集盘点、环境说明
+docs/整理/                  PaperList 对比表、架构图 pptx
 ```
 
 `models/utils/extract_metrics.py` 是遗留脚本，解析的是旧日志格式
@@ -220,7 +338,7 @@ python -m compileall -q models
 # 架构预检（仅覆盖 RepDW 等价性与可选数据路径探测，不等于完整前向验证）
 python models/scripts/test.py --smoke --onGPU false
 
-# 主实验：四个数据集，串行在物理 GPU 1，约 7 小时
+# 主实验：四个数据集，串行在物理 GPU 1
 screen -dmS baseline bash train_scripts/baseline/run_all_gpu1.sh
 tail -f saved_models/baseline/*/trainValLog.txt
 
@@ -241,7 +359,7 @@ python models/scripts/train.py --dataset LEVIR-CD-256 \
 # 复杂度和参数量
 python models/utils/param.py --device cpu
 
-# 演示系统
+# 演示系统（本地 CPU 推理；必须用 C:\Python314\python.exe，见 web_demo/README.md）
 python web_demo/app.py                      # http://127.0.0.1:5000
 ```
 
@@ -281,12 +399,12 @@ python web_demo/app.py                      # http://127.0.0.1:5000
 
 - **不要**向 GitHub 提交密码、连接凭据、数据集、预测输出、大型 checkpoint
   或无关缓存。`.gitignore` 已忽略 `saved_models/`、`web_demo/weights/`、
-  `web_demo/samples/`、`docs/experiment_metrics.xlsx`；但不要依赖它自动排除所有输出。
+  `docs/experiment_metrics.xlsx`；但不要依赖它自动排除所有输出。
 - 提交前查看实际暂存内容，按任务只暂存需要的文件：
 
 ```bash
 git status --short
-git add AGENTS.md
+git add README.md
 # git add models/          # 若本次确实修改模型
 git diff --cached --stat
 git diff --cached
