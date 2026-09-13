@@ -1,9 +1,10 @@
-# GitHub 更新方式（README.md / models / web_demo / Visualization / docs/整理/）
+# GitHub 更新方式（README.md / models / web_demo / Visualization / docs/整理/ / docs/参考文献/）
 
 GitHub 仓库：[YuqiWang-code/AEGIS-CD](https://github.com/YuqiWang-code/AEGIS-CD)
 
-以后更新根目录 `README.md`、本地 `models/`、`web_demo/`、`Visualization/`（论文/比赛图稿）
-或 `docs/整理/`（PaperList、架构图 pptx、比赛规则 pdf）后，在项目根目录执行：
+以后更新根目录 `README.md`、本地 `models/`、`web_demo/`、`Visualization/`（论文/比赛图稿）、
+`docs/整理/`（PaperList、架构图 pptx、比赛规则 pdf）或 `docs/参考文献/`（技术文档交叉引用指南）
+后，在项目根目录执行：
 
 ```bash
 git add README.md
@@ -13,6 +14,7 @@ git add Visualization/
 git add docs/整理/RS-CD【PaperList】.xlsx
 git add docs/整理/AEGIS-CD_Diagrams.pptx
 git add docs/整理/JSAI2025.pdf
+git add docs/参考文献/AEGIS-CD_AIC技术文档_参考文献与交叉引用指南.md
 git commit -m "Update AEGIS-CD"
 git push
 ```
@@ -20,6 +22,7 @@ git push
 > 注：`docs/experiment_metrics.xlsx`（完整实验指标）与 `web_demo/weights/`（大文件，走
 > GitHub Releases 分发），以及 `Visualization/` 下的 `__pycache__/`、`*.zip`、`logs/`
 > 不上传 GitHub，仅保留本地。`web_demo/samples/`（96 张样例图）已随仓库提交。
+> `docs/参考文献/` 只提交技术文档指南（.md），其下的论文 PDF 仅保留本地。
 
 ---
 
